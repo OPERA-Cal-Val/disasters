@@ -666,6 +666,7 @@ def generate_products(df_opera, mode, mode_dir, layout_title, bbox, zoom_bbox, f
     from rasterio.shutil import copy
     from collections import defaultdict
     import re
+    from pyproj import CRS
 
     # Create data directory
     data_dir = mode_dir / "data"
@@ -681,15 +682,34 @@ def generate_products(df_opera, mode, mode_dir, layout_title, bbox, zoom_bbox, f
 
     try:
         # Try to use a standard EPSG code
-        target_crs_proj4 = pyproj.CRS("EPSG:5070").to_proj4()
-        print("[INFO] Using EPSG:5070 (CONUS Albers) as master projection.")
+        #target_crs_proj4 = pyproj.CRS("EPSG:5070").to_proj4()
+        target_crs_proj4 = pyproj.CRS("EPSG:4326").to_proj4()
+        #target_crs_proj4 = pyproj.CRS("EPSG:32817").to_proj4()
+        #print("[INFO] Using EPSG:5070 (CONUS Albers) as master projection.")
+        print("[INFO] Using EPSG:4326 (WGS 84) as master projection.")
     except:
         # If that doesn't work, fallback to a manual PROJ4 string
-        print("[WARN] Could not find EPSG:5070. Falling back to manual CONUS Albers PROJ4 string.")
-        target_crs_proj4 = "+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+        # print("[WARN] Could not find EPSG:5070. Falling back to manual CONUS Albers PROJ4 string.")
+        # target_crs_proj4 = "+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+        print("[WARN] Could not find EPSG:4326. Falling back to manual WGS 84 PROJ4 string.")
+        target_crs_proj4 = "+proj=longlat +datum=WGS84 +no_defs"
+        # print("[WARN] Could not find EPSG:32817. Falling back to manual UTM Zone 17N PROJ4 string.")
+        # target_crs_proj4 = "+proj=utm +zone=17 +datum=WGS84 +units=m +no_defs"
 
-    # Get the exact grid properties for master grid using user-defined bbox
-    master_grid = get_master_grid_props(bbox, target_crs_proj4, target_res=30)
+
+    # Detect if the CRS is geographic to set the correct resolution
+    crs_obj = CRS.from_proj4(target_crs_proj4)
+    if crs_obj.is_geographic:
+        # Convert 30m to degrees (Approximate: 30m / 111,320m)
+        target_res = 0.0002695
+        print(f"[INFO] Target CRS is geographic. Setting resolution to {target_res} degrees (~30m).")
+    else:
+        # Keep 30m for projected CRS
+        target_res = 30
+        print(f"[INFO] Target CRS is projected. Setting resolution to {target_res} meters.")
+    
+    # Get the exact grid properties using the dynamic resolution
+    master_grid = get_master_grid_props(bbox, target_crs_proj4, target_res=target_res)
     
     # Define the resampling method.
     # 'nearest' is for categorical data (like DSWx water classes).
@@ -879,7 +899,7 @@ def generate_products(df_opera, mode, mode_dir, layout_title, bbox, zoom_bbox, f
                             if current_conf_DS is None:
                                 print(f"[WARN] CONF layers not available; skipping snow/ice reclassification for {short_name} on {date}")
                             else:
-                                print(f"[INFO] Reclassifying false snow/ice positives as water based on CONF layers for CRS {utm_suffix}")
+                                print(f"[INFO] Reclassifying false snow/ice positives as water based on CONF layers")
                                 ds_group, colormap = reclassify_snow_ice_as_water(ds_group, current_conf_DS)
                         else:
                             if reclassify_snow_ice == True and short_name != "OPERA_L3_DSWX-HLS_V1":
