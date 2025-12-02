@@ -683,18 +683,19 @@ def generate_products(df_opera, mode, mode_dir, layout_title, bbox, zoom_bbox, f
     try:
         # Try to use a standard EPSG code
         #target_crs_proj4 = pyproj.CRS("EPSG:5070").to_proj4()
-        target_crs_proj4 = pyproj.CRS("EPSG:4326").to_proj4()
-        #target_crs_proj4 = pyproj.CRS("EPSG:32817").to_proj4()
+        #target_crs_proj4 = pyproj.CRS("EPSG:4326").to_proj4()
+        target_crs_proj4 = pyproj.CRS("EPSG:32817").to_proj4()
+        print("[INFO] Using EPSG:32817 (UTM Zone 17N) as master projection.")
         #print("[INFO] Using EPSG:5070 (CONUS Albers) as master projection.")
-        print("[INFO] Using EPSG:4326 (WGS 84) as master projection.")
+        #print("[INFO] Using EPSG:4326 (WGS 84) as master projection.")
     except:
         # If that doesn't work, fallback to a manual PROJ4 string
         # print("[WARN] Could not find EPSG:5070. Falling back to manual CONUS Albers PROJ4 string.")
         # target_crs_proj4 = "+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
-        print("[WARN] Could not find EPSG:4326. Falling back to manual WGS 84 PROJ4 string.")
-        target_crs_proj4 = "+proj=longlat +datum=WGS84 +no_defs"
-        # print("[WARN] Could not find EPSG:32817. Falling back to manual UTM Zone 17N PROJ4 string.")
-        # target_crs_proj4 = "+proj=utm +zone=17 +datum=WGS84 +units=m +no_defs"
+        #print("[WARN] Could not find EPSG:4326. Falling back to manual WGS 84 PROJ4 string.")
+        #target_crs_proj4 = "+proj=longlat +datum=WGS84 +no_defs"
+        print("[WARN] Could not find EPSG:32817. Falling back to manual UTM Zone 17N PROJ4 string.")
+        target_crs_proj4 = "+proj=utm +zone=17 +datum=WGS84 +units=m +no_defs"
 
 
     # Detect if the CRS is geographic to set the correct resolution
