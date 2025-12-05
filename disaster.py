@@ -441,9 +441,15 @@ def filter_by_date_and_confidence(DS, DS_dates, date_threshold,
     for i, (da_data, da_date) in enumerate(zip(DS, DS_dates)):
         print(f"[INFO] Filtering granule {i + 1}/{len(DS)}")
 
-        # Date mask
-        date_mask = da_date >= date_threshold
+        # Create a mask that excludes "No Data" and "No Disturbance" values
+        valid_data_mask = da_data != 0
 
+        # Create date threshold mask
+        date_threshold_mask = da_date >= date_threshold
+
+        # Combine masks
+        date_mask = valid_data_mask & date_threshold_mask
+        
         # Optional confidence mask
         if DS_conf is not None and confidence_threshold is not None:
             conf_layer = DS_conf[i]
