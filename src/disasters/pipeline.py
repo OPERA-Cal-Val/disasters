@@ -988,7 +988,7 @@ def run_max_extent_pipeline(
     diff_id_str, diff_date_str_layout, layout_title, bbox, zoom_bbox,
     reclassify_snow_ice, skip_existing
 ) -> tuple:
-    """Computes max flood extent and waits for it to finish before plotting.
+    """Computes max flood extent and an estimate of impacted structures.
     
     Args:
         input_paths (list[Path]): List of filepaths to all mosaics to be included in the max extent calculation.
@@ -1009,6 +1009,7 @@ def run_max_extent_pipeline(
         tuple: (diff_time, plot_time) floating point times in seconds. Max extent calculation time is included in diff_time.
     """
     from .diff import compute_and_write_max_flood_extent
+    from .impact import compute_structure_impact
     
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -1022,6 +1023,14 @@ def run_max_extent_pipeline(
         except Exception as e:
             logger.error(f"Max Extent computation failed: {e}")
             return 0.0, 0.0
+        
+        # Compute estimate of impacted structures
+        impact_csv_path = out_path.parent / f"{out_path.stem}_impacted_structures.csv"
+        try:
+            total_bldgs, flooded_bldgs = compute_structure_impact(out_path, bbox, impact_csv_path)
+            logger.info(f"[Impact Summary] {flooded_bldgs} out of {total_bldgs} structures flooded in AOI.")
+        except Exception as e:
+            logger.warning(f"[Impact] Structure impact computation failed: {e}")
         
     # Plot it after generation is complete
     run_plotting_task(
