@@ -4,11 +4,17 @@ from typing import Tuple
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import osmnx as ox
 import rasterio
 from rasterio.mask import mask
+from rasterio.windows import Window
+from pyproj import Transformer
+from shapely.geometry import box
 
 logger = logging.getLogger(__name__)
+
+ox.settings.timeout = 900
 
 def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Path) -> Tuple[int, int]:
     """
@@ -23,43 +29,98 @@ def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Pat
     Returns:
         tuple: (total_buildings_found, flooded_buildings_count)
     """
-    logger.info("[Impact] Querying OpenStreetMap API for buildings in AOI...")
+    logger.info("[Impact] Analyzing max flood extent using smart grid chunking...")
     
-    s, n, w, e = bbox_snwe
-    tags = {'building': True}
+    gdf_list = []
     
-    try:
-        # Fetch features from OSM
-        gdf = ox.features_from_bbox(bbox=(n, s, e, w), tags=tags)
-    except Exception as err:
-        logger.warning(f"[Impact] OSM API query failed or timed out: {err}")
-        return 0, 0
-
-    if gdf.empty:
-        logger.info("[Impact] No buildings found in this AOI via OSM.")
-        return 0, 0
-
-    # Filter to only keep polygons/multipolygons (buildings), drop nodes/lines
-    gdf = gdf[gdf.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy()
-    total_buildings = len(gdf)
-    logger.info(f"[Impact] Retrieved {total_buildings} building polygons. Running spatial intersection...")
-
-    # Read the CRS of the generated raster to align our vector data
     with rasterio.open(raster_path) as src:
         raster_crs = src.crs
+        transform = src.transform
+        transformer = Transformer.from_crs(raster_crs, "EPSG:4326", always_xy=True)
         
-        # Project the OSM data (EPSG:4326) to the raster's UTM CRS
-        gdf_proj = gdf.to_crs(raster_crs)
+        # Define window size (500x500 pixels = 15x15km at 30m resolution)
+        window_size = 500 
         
-        # Define a quick helper function to check if a polygon touches water
+        height = src.height
+        width = src.width
+        
+        total_windows = int(np.ceil(height / window_size) * np.ceil(width / window_size))
+        wet_windows = 0
+        current_window = 0
+        
+        # Iterate through the raster in 15km x 15km blocks
+        for row_off in range(0, height, window_size):
+            for col_off in range(0, width, window_size):
+                current_window += 1
+                
+                # Protect against edge-of-raster bounds
+                w_width = min(window_size, width - col_off)
+                w_height = min(window_size, height - row_off)
+                
+                window = Window(col_off, row_off, w_width, w_height)
+                chunk = src.read(1, window=window)
+                
+                # If there's no water (1) in this chunk, skip the API call entirely!
+                if not np.any(chunk == 1):
+                    continue
+                    
+                wet_windows += 1
+                
+                # Print progress to the console
+                logger.info(f"[Impact] Fetching OSM data for flooded chunk {wet_windows} (Grid window {current_window}/{total_windows})...")
+                
+                # Get transform
+                left = transform.c + col_off * transform.a
+                right = transform.c + (col_off + w_width) * transform.a
+                top = transform.f + row_off * transform.e
+                bottom = transform.f + (row_off + w_height) * transform.e
+                
+                # Project to Lat/Lon
+                lon_left, lat_bottom = transformer.transform(left, bottom)
+                lon_right, lat_top = transformer.transform(right, top)
+                
+                # Ensure absolute min/max ordering regardless of hemisphere
+                min_lon, max_lon = min(lon_left, lon_right), max(lon_left, lon_right)
+                min_lat, max_lat = min(lat_bottom, lat_top), max(lat_bottom, lat_top)
+                
+                # Create a Shapely polygon
+                poly = box(min_lon, min_lat, max_lon, max_lat)
+                
+                # Fetch from OSM using the polygon
+                try:
+                    chunk_gdf = ox.features_from_polygon(poly, tags={'building': True})
+                    if not chunk_gdf.empty:
+                        # Keep only actual building footprints
+                        chunk_gdf = chunk_gdf[chunk_gdf.geometry.type.isin(['Polygon', 'MultiPolygon'])]
+                        if not chunk_gdf.empty:
+                            gdf_list.append(chunk_gdf)
+                except Exception as e:
+                    logger.debug(f"[Impact] OSM chunk failed or timed out: {e}")
+                    continue
+                    
+    logger.info(f"[Impact] Skipped {total_windows - wet_windows} non-flooded windows. Queried OSM for {wet_windows} flooded windows.")
+    
+    if not gdf_list:
+        logger.info("[Impact] No buildings found in the flooded areas.")
+        return 0, 0
+        
+    # Combine all chunked building dataframes
+    gdf = pd.concat(gdf_list)
+    
+    # Drop duplicates (in case a building footprint crossed the boundary of two windows)
+    gdf = gdf[~gdf.index.duplicated(keep='first')].copy()
+    
+    logger.info(f"[Impact] Retrieved {len(gdf)} buildings near water. Running spatial intersection...")
+
+    # Project the OSM data (EPSG:4326) to the raster's UTM CRS for accurate intersection
+    gdf_proj = gdf.to_crs(raster_crs)
+    
+    with rasterio.open(raster_path) as src:
         def is_flooded(geom):
             try:
-                # Crop the raster to the exact shape of the building polygon
                 out_image, _ = mask(src, [geom], crop=True)
-                # Return True if any pixel inside the cropped array equals 1 (Water)
                 return 1 if np.any(out_image == 1) else 0
             except ValueError:
-                # Triggered if polygon falls completely outside raster bounds
                 return 0
 
         # Apply the intersection logic row by row
@@ -70,12 +131,16 @@ def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Pat
     flooded_count = len(flooded_gdf)
 
     if flooded_count > 0:
-        # Convert back to EPSG:4326 for human-readable Lat/Lon in the CSV
-        flooded_gdf = flooded_gdf.to_crs("EPSG:4326")
+        # Calculate centroids
+        centroids_utm = flooded_gdf.geometry.centroid
         
-        # Extract centroids for easy plotting/viewing
-        flooded_gdf['longitude'] = flooded_gdf.geometry.centroid.x
-        flooded_gdf['latitude'] = flooded_gdf.geometry.centroid.y
+        # Convert both the building polygons and the centroids back to Lat/Lon
+        flooded_gdf = flooded_gdf.to_crs("EPSG:4326")
+        centroids_4326 = centroids_utm.to_crs("EPSG:4326")
+        
+        # Extract the coordinates
+        flooded_gdf['longitude'] = centroids_4326.x
+        flooded_gdf['latitude'] = centroids_4326.y
         
         # Clean up the dataframe before saving
         cols_to_keep = ['longitude', 'latitude']
@@ -88,4 +153,4 @@ def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Pat
     else:
         logger.info("[Impact] Zero buildings intersected the flood extent.")
 
-    return total_buildings, flooded_count
+    return 0, flooded_count
