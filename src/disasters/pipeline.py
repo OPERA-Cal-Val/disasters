@@ -1027,8 +1027,8 @@ def run_max_extent_pipeline(
         # Compute estimate of impacted structures
         impact_csv_path = out_path.parent / f"{out_path.stem}_impacted_structures.csv"
         try:
-            total_bldgs, flooded_bldgs = compute_structure_impact(out_path, bbox, impact_csv_path)
-            logger.info(f"[Impact Summary] {flooded_bldgs} out of {total_bldgs} structures flooded in AOI.")
+            _, flooded_bldgs = compute_structure_impact(out_path, bbox, impact_csv_path)
+            logger.info(f"[Impact Summary] {flooded_bldgs} flood-impacted structures in the AOI.")
         except Exception as e:
             logger.warning(f"[Impact] Structure impact computation failed: {e}")
         

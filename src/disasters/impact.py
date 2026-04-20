@@ -118,7 +118,7 @@ def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Pat
     with rasterio.open(raster_path) as src:
         def is_flooded(geom):
             try:
-                out_image, _ = mask(src, [geom], crop=True)
+                out_image, _ = mask(src, [geom], crop=True, all_touched=True)
                 return 1 if np.any(out_image == 1) else 0
             except ValueError:
                 return 0
@@ -131,25 +131,36 @@ def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Pat
     flooded_count = len(flooded_gdf)
 
     if flooded_count > 0:
-        # Calculate centroids
+        # Calculate centroids in UTM meters
         centroids_utm = flooded_gdf.geometry.centroid
         
         # Convert both the building polygons and the centroids back to Lat/Lon
         flooded_gdf = flooded_gdf.to_crs("EPSG:4326")
         centroids_4326 = centroids_utm.to_crs("EPSG:4326")
         
-        # Extract the coordinates
+        # Save geojson of building polygons
+        geojson_path = output_csv.with_suffix('.geojson')
+        geo_cols = ['geometry']
+        if 'name' in flooded_gdf.columns: geo_cols.append('name')
+        if 'building' in flooded_gdf.columns: geo_cols.append('building')
+        
+        # Save spatial file
+        flooded_gdf[geo_cols].to_file(geojson_path, driver="GeoJSON")
+        logger.info(f"[Impact] Saved {flooded_count} impacted structure footprints to {geojson_path.name}")
+        
+        # Save csv of building centroids
         flooded_gdf['longitude'] = centroids_4326.x
         flooded_gdf['latitude'] = centroids_4326.y
         
-        # Clean up the dataframe before saving
-        cols_to_keep = ['longitude', 'latitude']
-        if 'name' in flooded_gdf.columns: cols_to_keep.append('name')
-        if 'building' in flooded_gdf.columns: cols_to_keep.append('building')
+        csv_cols = ['longitude', 'latitude']
+        if 'name' in flooded_gdf.columns: csv_cols.append('name')
+        if 'building' in flooded_gdf.columns: csv_cols.append('building')
         
-        df_out = flooded_gdf[cols_to_keep]
+        # Save flat file
+        df_out = flooded_gdf[csv_cols]
         df_out.to_csv(output_csv, index=False)
-        logger.info(f"[Impact] Saved {flooded_count} impacted structures to {output_csv.name}")
+        logger.info(f"[Impact] Saved {flooded_count} impacted structure centroids to {output_csv.name}")
+        
     else:
         logger.info("[Impact] Zero buildings intersected the flood extent.")
 
