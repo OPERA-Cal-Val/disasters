@@ -6,6 +6,7 @@ from typing import Optional
 
 import click
 
+from .io import parse_bbox_input
 from .pipeline import PipelineConfig, run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,8 @@ def cli() -> None:
 
 @cli.command(name="run")
 @click.option(
-    "-b",
-    "--bbox",
+    "-b", 
+    "--bbox", 
     type=str,
     required=True,
     help=(
@@ -235,35 +236,19 @@ def run(
             "Slope threshold must be between 0 and 100.", param_hint="--slope-threshold"
         )
 
-    # Process bbox tokens into a list of floats OR a single WKT/path string
-    bbox_parts = bbox.replace(",", " ").split()
+    # Parse bbox input
+    try:
+        bbox_arg = parse_bbox_input(bbox)
+    except Exception as e:
+        raise click.BadParameter(f"Failed to parse bounding box: {e}", param_hint="--bbox")
 
-    if len(bbox_parts) == 4:
-        try:
-            bbox_arg = [float(x) for x in bbox_parts]
-        except ValueError:
-            bbox_arg = bbox
-    else:
-        # Keep as WKT string or file path
-        bbox_arg = bbox
-
-    # Process zoom_bbox if provided
+    # Parse zoom_bbox input, if provided
     zoom_bbox_arg = None
     if zoom_bbox is not None:
-        zoom_parts = zoom_bbox.replace(",", " ").split()
-        if len(zoom_parts) == 4:
-            try:
-                zoom_bbox_arg = [float(x) for x in zoom_parts]
-            except ValueError:
-                raise click.BadParameter(
-                    "Zoom bounding box must contain exactly 4 valid numbers.",
-                    param_hint="--zoom-bbox",
-                )
-        else:
-            raise click.BadParameter(
-                "Zoom bounding box must contain exactly 4 valid numbers.",
-                param_hint="--zoom-bbox",
-            )
+        try:
+            zoom_bbox_arg = parse_bbox_input(zoom_bbox)
+        except Exception as e:
+            raise click.BadParameter(f"Failed to parse zoom bounding box: {e}", param_hint="--zoom-bbox")
 
     # Build the PipelineConfig object
     cfg = PipelineConfig(
@@ -508,11 +493,18 @@ def download(
 
 @cli.command(name="mosaic")
 @click.option(
-    "-i",
-    "--input-dir",
+    "-b",
+    "--bbox",
+    type=str,
+    required=False,
+    help="Bounding box (4 coords, WKT, or path to KML/GeoJSON). Limits mosaic extent.",
+)
+@click.option(
+    "-ld",
+    "--local-dir",
     type=click.Path(path_type=Path, file_okay=False, dir_okay=True, exists=True),
     required=True,
-    help="Path to a local directory containing pre-downloaded OPERA geotiffs.",
+    help="Path to a local directory containing pre-downloaded OPERA geotiffs. The mosaic will be built from these files."
 )
 @click.option(
     "-o",
@@ -540,35 +532,28 @@ def download(
     help="If set, tracks performance metrics during the mosaicking process.",
 )
 def mosaic(
-    input_dir: Path, output_dir: Path, bbox: Optional[str], benchmark: bool
+    bbox: Optional[str],
+    local_dir: Path,
+    output_dir: Path,
+    benchmark: bool
 ) -> None:
     """Stitch local OPERA granules into analysis-ready mosaics (No analysis/layouts)."""
-
-    # Process optional bbox using the same parsing as the run command
-    bbox_arg = None
-    if bbox is not None:
-        bbox_parts = bbox.replace(",", " ").split()
-        if len(bbox_parts) == 4:
-            try:
-                coords = [float(x) for x in bbox_parts]
-                # Auto-swap S/N if flipped
-                if coords[0] > coords[1]:
-                    coords[0], coords[1] = coords[1], coords[0]
-                # Auto-swap W/E if flipped
-                if coords[2] > coords[3]:
-                    coords[2], coords[3] = coords[3], coords[2]
-                bbox_arg = coords
-            except ValueError:
-                bbox_arg = bbox
-        else:
-            bbox_arg = bbox
-
-    # Import the dedicated mosaic pipeline (we will build this next)
     from .pipeline import run_mosaic_only
 
+    # Parse the input string into the [S, N, W, E] list
+    parsed_bbox = None
+    if bbox:
+        try:
+            parsed_bbox = parse_bbox_input(bbox)
+        except Exception as e:
+            raise click.BadParameter(f"Failed to parse bounding box: {e}", param_hint="--bbox")
+    
     logger.info("Starting mosaic pipeline...")
     output_path = run_mosaic_only(
-        input_dir=input_dir, output_dir=output_dir, bbox=bbox_arg, benchmark=benchmark
+        input_dir=local_dir,
+        output_dir=output_dir,
+        bbox=parsed_bbox,
+        benchmark=benchmark
     )
 
     if output_path:
