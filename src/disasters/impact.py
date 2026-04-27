@@ -118,8 +118,25 @@ def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Pat
     with rasterio.open(raster_path) as src:
         def is_flooded(geom):
             try:
-                out_image, _ = mask(src, [geom], crop=True, all_touched=True)
-                return 1 if np.any(out_image == 1) else 0
+                # Compute water/no water pixels within the building footprint
+                out_image, _ = mask(src, [geom], crop=True, all_touched=False)
+
+                # out_image is a 3D array, analyze the first band
+                flood_data = out_image[0]
+                
+                # Determinetotal pixels that belong to the building structure
+                structure_pixels = np.count_nonzero(flood_data != src.nodata)
+                if structure_pixels == 0:
+                    return 0
+                
+                # Count how many of those pixels are classified as water (value=1)
+                water_pixels = np.count_nonzero(flood_data == 1)
+
+                # Calculate the percentage of the building footprint that is flooded
+                coverage = water_pixels / structure_pixels
+
+                # Consider the building flooded if at least 50% of its footprint is covered by water
+                return 1 if coverage >= 0.5 else 0
             except ValueError:
                 return 0
 
