@@ -75,6 +75,7 @@ class DeferredExecutor:
         self._jobs.clear()
         return None
 
+
 @dataclass
 class PipelineConfig:
     """
@@ -756,24 +757,43 @@ def run_plotting_task(
     Returns:
         float: Elapsed time if successful, 0.0 otherwise.
     """
+    import os
+    import tempfile
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     
     t0 = time.time()
+    
+    # Save the original TMPDIR
+    original_tmp = os.environ.get("TMPDIR")
+    
     try:
-        map_name = make_map(
-            maps_dir, mosaic_path, short_name, layer, date_id, 
-            bbox, zoom_bbox, is_difference, skip_existing=skip_existing
-        )
-        if map_name:
-            make_layout(
-                layouts_dir, map_name, short_name, layer, 
-                date_id, layout_date, layout_title, reclassify_snow_ice, skip_existing=skip_existing
+        # Create a self-destructing temporary directory
+        with tempfile.TemporaryDirectory(prefix="opera_plot_") as temp_dir:
+            # Force GMT, Ghostscript, and GDAL to use this specific folder
+            os.environ["TMPDIR"] = temp_dir
+            
+            map_name = make_map(
+                maps_dir, mosaic_path, short_name, layer, date_id, 
+                bbox, zoom_bbox, is_difference, skip_existing=skip_existing
             )
-        return time.time() - t0
+            if map_name:
+                make_layout(
+                    layouts_dir, map_name, short_name, layer, 
+                    date_id, layout_date, layout_title, reclassify_snow_ice, skip_existing=skip_existing
+                )
+                
     except Exception as e:
         logger.error(f"Background plotting failed for {short_name} {layer} {date_id}: {e}")
         return 0.0
+    finally:
+        # Restore the original TMPDIR state
+        if original_tmp is not None:
+            os.environ["TMPDIR"] = original_tmp
+        else:
+            os.environ.pop("TMPDIR", None)
+            
+    return time.time() - t0
 
 
 def run_difference_pipeline(
@@ -948,6 +968,8 @@ def generate_products(
     Returns:
         None
     """
+    import shutil
+
     # Define short names and layer names based on mode FIRST
     if mode == "flood":
         short_names = ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1"]
@@ -1644,4 +1666,7 @@ def generate_products(
             # Update Stats
             if 'plotting' in benchmark_stats: benchmark_stats['plotting']['seq'] = total_plotting_time
             if 'differencing' in benchmark_stats: benchmark_stats['differencing']['seq'] = total_diff_time
+
+        shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+
         logger.info("All tasks complete.")
