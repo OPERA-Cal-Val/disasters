@@ -1001,7 +1001,6 @@ def generate_products(
         None
     """
     import shutil
-    
     # Define short names and layer names based on mode or product FIRST
     if mode:
         if mode == "flood":
@@ -1586,6 +1585,8 @@ def generate_products(
                             for da in conf_DS: da.close()
                         if date_DS is not None:
                             for da in date_DS: da.close()
+
+            shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
 
         # RTC RGB Visualization Generation
         if mode in ["landslide", "rtc-rgb"] and "OPERA_L2_RTC-S1_V1" in mosaic_index:
