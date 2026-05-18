@@ -719,7 +719,7 @@ def run_mosaic_only(input_dir: Path, output_dir: Path, bbox: Sequence[float] | s
                         )
 
                         # Translate the standard GTiff into a COG in-place
-                        save_gtiff_as_cog(mosaic_path, mosaic_path)
+                        save_gtiff_as_cog(conf_path, conf_path)
 
                     # Close all xarray handles to prevent sys.excepthook teardown crashes
                     if DS is not None:
@@ -1197,10 +1197,9 @@ def generate_products(
                         # For non-RTC products, we load the granules into xarray DataArrays for filtering and mosaicking
                         mosaic_name = f"{short_name}_{layer}_{pass_id}_mosaic.tif"
                         mosaic_path = data_dir / mosaic_name
-                        tmp_path = data_dir / f"tmp_{mosaic_name}"
+
                         conf_name = f"{short_name}_CONF_{pass_id}_mosaic.tif"
                         conf_path = data_dir / conf_name
-                        conf_tmp = data_dir / f"tmp_{conf_name}"
                         
                         conf_column = "Download URL CONF" if mode == "flood" else "Download URL VEG-DIST-CONF"
                         has_conf = conf_column in cluster_df.columns and not cluster_df[conf_column].dropna().empty
@@ -1520,7 +1519,7 @@ def generate_products(
                             )
 
                             # Translate the standard GTiff into a COG in-place
-                            save_gtiff_as_cog(mosaic_path, mosaic_path)
+                            save_gtiff_as_cog(conf_path, conf_path)
 
                             logger.info(f"Saved spatially synchronized CONF layer: {conf_name}")
 
