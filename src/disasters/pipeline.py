@@ -1025,10 +1025,10 @@ def generate_products(
     elif product:
         short_names = [product]
         if "DSWX" in product:
-            layer_names = ["WTR", "BWTR", "CONF"]
+            layer_names = ["WTR", "BWTR"]
             mode = "flood" # Inherit mode logic for downstream processing
         elif "DIST" in product:
-            layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS", "VEG-DIST-DATE", "VEG-DIST-CONF"]
+            layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS"]
             mode = "fire"
         elif "RTC" in product:
             layer_names = ["RTC-VV", "RTC-VH"]
