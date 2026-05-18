@@ -484,6 +484,9 @@ def run_download_only(
             target_layers = ["VEG-ANOM-MAX", "VEG-DIST-STATUS", "VEG-DIST-DATE", "VEG-DIST-CONF"]
         elif "RTC" in product:
             target_layers = ["RTC-VV", "RTC-VH"]
+        else:
+            logger.info(f"Downloading product '{product}' is not currently supported. Exiting...")
+            return None
             
         df_opera = df_opera[df_opera["Dataset"].isin(short_names)]
         url_cols = [f"Download URL {layer}" for layer in target_layers if f"Download URL {layer}" in df_opera.columns]
@@ -1030,6 +1033,9 @@ def generate_products(
         elif "RTC" in product:
             layer_names = ["RTC-VV", "RTC-VH"]
             mode = "rtc-rgb"
+        else:
+            logger.info(f"Product '{product}' is not currently supported for mosaic/map generation. Exiting...")
+            return
             
     # Filter to see if we have ANY data for the products required by this mode, if not, exit
     df_mode_data = df_opera[df_opera["Dataset"].isin(short_names)]
