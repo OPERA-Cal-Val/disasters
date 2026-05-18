@@ -19,7 +19,6 @@ import rasterio
 import xarray as xr
 from osgeo import gdal
 from rasterio.enums import Resampling
-from rasterio.shutil import copy
 from rasterio.warp import transform_bounds
 
 # Local/Relative Imports
@@ -47,10 +46,35 @@ from .mosaic import (
     get_master_crs,
     get_master_grid_props,
     mosaic_opera,
+    warp_dataarray_to_grid,
 )
 logger = logging.getLogger(__name__)
 
 gdal.DontUseExceptions()
+
+
+class DeferredExecutor:
+    """Collect submitted work and run it sequentially at shutdown."""
+
+    def __init__(self):
+        self._jobs = []
+
+    def submit(self, fn, *args, **kwargs):
+        future = concurrent.futures.Future()
+        self._jobs.append((future, fn, args, kwargs))
+        return future
+
+    def shutdown(self, wait: bool = True):
+        for future, fn, args, kwargs in self._jobs:
+            if future.done():
+                continue
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+        self._jobs.clear()
+        return None
+
 
 @dataclass
 class PipelineConfig:
@@ -620,19 +644,32 @@ def run_mosaic_only(input_dir: Path, output_dir: Path, bbox: Sequence[float] | s
                         conf_DS = None
 
                     all_warped_ds = []
+                    warp_temp_dir = output_dir / ".warp_cache"
                     
                     for i, da in enumerate(DS):
                         try:
-                            # Isolate the master grid properties specifically for this projection
-                            grid_props = master_grid.copy()
-                            dst_crs_val = grid_props.pop("dst_crs")
-                            
-                            da_warped = da.rio.reproject(dst_crs_val, **grid_props, resampling=resampling_method)
+                            da_warped = warp_dataarray_to_grid(
+                                da,
+                                master_grid,
+                                resampling_method,
+                                warp_temp_dir,
+                                temp_prefix=f"{short_name}_{layer}_{pass_id}_data_{i}",
+                                username=username,
+                                password=password,
+                            )
                             
                             # If a CONF layer exists, warp it and concatenate it underneath the main layer
                             # This ensures mosaic_opera brings the exact matching CONF pixel along with the WTR pixel.
                             if conf_DS is not None and i < len(conf_DS):
-                                conf_warped = conf_DS[i].rio.reproject(dst_crs_val, **grid_props, resampling=resampling_method)
+                                conf_warped = warp_dataarray_to_grid(
+                                    conf_DS[i],
+                                    master_grid,
+                                    resampling_method,
+                                    warp_temp_dir,
+                                    temp_prefix=f"{short_name}_{layer}_{pass_id}_conf_{i}",
+                                    username=username,
+                                    password=password,
+                                )
                                 combined = xr.concat([da_warped, conf_warped], dim="band")
                                 combined = combined.assign_coords(band=[1, 2])
                                 all_warped_ds.append(combined)
@@ -656,37 +693,33 @@ def run_mosaic_only(input_dir: Path, output_dir: Path, bbox: Sequence[float] | s
                     # Save Main Layer
                     mosaic_name = f"{short_name}_{layer}_{pass_id}_mosaic.tif"
                     mosaic_path = output_dir / mosaic_name
-                    tmp_path = output_dir / f"tmp_{mosaic_name}"
                     
-                    image = array_to_image(mosaic, colormap=colormap, nodata=nodata)
-                    copy(image, tmp_path, driver="GTiff")
-                    gdal.Warp(
-                        str(mosaic_path),
-                        str(tmp_path),
-                        xRes=target_res,
-                        yRes=target_res,
-                        creationOptions=["COMPRESS=DEFLATE"],
+                    array_to_image(
+                        mosaic,
+                        output=mosaic_path,
+                        driver="GTiff",
+                        colormap=colormap,
+                        nodata=nodata,
                     )
+
+                    # Translate the standard GTiff into a COG in-place
                     save_gtiff_as_cog(mosaic_path, mosaic_path)
-                    cleanup_temp_file(tmp_path)
                     
                     # Save Synchronized CONF Layer (if it was requested via stacking)
                     if conf_mosaic is not None:
                         conf_name = f"{short_name}_CONF_{pass_id}_mosaic.tif"
                         conf_path = output_dir / conf_name
-                        conf_tmp = output_dir / f"tmp_{conf_name}"
                         
-                        conf_image = array_to_image(conf_mosaic, colormap=None, nodata=255)
-                        copy(conf_image, conf_tmp, driver="GTiff")
-                        gdal.Warp(
-                            str(conf_path),
-                            str(conf_tmp),
-                            xRes=target_res,
-                            yRes=target_res,
-                            creationOptions=["COMPRESS=DEFLATE"],
+                        array_to_image(
+                            conf_mosaic,
+                            output=conf_path,
+                            driver="GTiff",
+                            colormap=None,
+                            nodata=255,
                         )
+
+                        # Translate the standard GTiff into a COG in-place
                         save_gtiff_as_cog(conf_path, conf_path)
-                        cleanup_temp_file(conf_tmp)
 
                     # Close all xarray handles to prevent sys.excepthook teardown crashes
                     if DS is not None:
@@ -724,24 +757,43 @@ def run_plotting_task(
     Returns:
         float: Elapsed time if successful, 0.0 otherwise.
     """
+    import os
+    import tempfile
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     
     t0 = time.time()
+    
+    # Save the original TMPDIR
+    original_tmp = os.environ.get("TMPDIR")
+    
     try:
-        map_name = make_map(
-            maps_dir, mosaic_path, short_name, layer, date_id, 
-            bbox, zoom_bbox, is_difference, skip_existing=skip_existing
-        )
-        if map_name:
-            make_layout(
-                layouts_dir, map_name, short_name, layer, 
-                date_id, layout_date, layout_title, reclassify_snow_ice, skip_existing=skip_existing
+        # Create a self-destructing temporary directory
+        with tempfile.TemporaryDirectory(prefix="opera_plot_") as temp_dir:
+            # Force GMT, Ghostscript, and GDAL to use this specific folder
+            os.environ["TMPDIR"] = temp_dir
+            
+            map_name = make_map(
+                maps_dir, mosaic_path, short_name, layer, date_id, 
+                bbox, zoom_bbox, is_difference, skip_existing=skip_existing
             )
-        return time.time() - t0
+            if map_name:
+                make_layout(
+                    layouts_dir, map_name, short_name, layer, 
+                    date_id, layout_date, layout_title, reclassify_snow_ice, skip_existing=skip_existing
+                )
+                
     except Exception as e:
         logger.error(f"Background plotting failed for {short_name} {layer} {date_id}: {e}")
         return 0.0
+    finally:
+        # Restore the original TMPDIR state
+        if original_tmp is not None:
+            os.environ["TMPDIR"] = original_tmp
+        else:
+            os.environ.pop("TMPDIR", None)
+            
+    return time.time() - t0
 
 
 def run_difference_pipeline(
@@ -916,7 +968,7 @@ def generate_products(
     Returns:
         None
     """
-    import multiprocessing
+    import shutil
 
     # Define short names and layer names based on mode FIRST
     if mode == "flood":
@@ -977,17 +1029,19 @@ def generate_products(
 
     # Extract and find unique dates, sort them
     df_opera["Start Date"] = df_opera["Start Time"].dt.date.astype(str)
-    unique_dates = df_opera["Start Date"].dropna().unique()
-    unique_dates.sort()
+    unique_dates = sorted(df_opera["Start Date"].dropna().unique())
 
     # Create an index of mosaics created for use in pair-wise differencing
     mosaic_index = defaultdict(lambda: defaultdict(dict))
     
-    # Initialize Executor for Plotting and Differencing
-    ctx = multiprocessing.get_context('spawn')
-    executor = concurrent.futures.ProcessPoolExecutor(max_workers=4, mp_context=ctx)
+    # Avoid background process pools here. Spawning workers while GDAL/rasterio
+    # work is still ongoing has been corrupting native library state on Linux.
+    executor = DeferredExecutor()
     plotting_futures = []
     differencing_futures = []
+
+    def ensure_executor():
+        return executor
 
     try:
         for date in unique_dates:
@@ -1046,7 +1100,7 @@ def generate_products(
                                     }
                                 
                                 if mode != "rtc-rgb":
-                                    future = executor.submit(
+                                    future = ensure_executor().submit(
                                         run_plotting_task, maps_dir, layouts_dir, mosaic_path, short_name, layer,
                                         pass_id, layout_date, layout_title, bbox, zoom_bbox,
                                         reclassify_snow_ice, False, benchmark_mode=(benchmark_stats is not None),
@@ -1129,7 +1183,7 @@ def generate_products(
 
                             # Submit Plotting Task (Skip individual layouts for rtc-rgb mode)
                             if mode != "rtc-rgb":
-                                future = executor.submit(
+                                future = ensure_executor().submit(
                                     run_plotting_task,
                                     maps_dir, layouts_dir, mosaic_path, short_name, layer,
                                     pass_id, layout_date, layout_title, bbox, zoom_bbox,
@@ -1143,10 +1197,9 @@ def generate_products(
                         # For non-RTC products, we load the granules into xarray DataArrays for filtering and mosaicking
                         mosaic_name = f"{short_name}_{layer}_{pass_id}_mosaic.tif"
                         mosaic_path = data_dir / mosaic_name
-                        tmp_path = data_dir / f"tmp_{mosaic_name}"
+
                         conf_name = f"{short_name}_CONF_{pass_id}_mosaic.tif"
                         conf_path = data_dir / conf_name
-                        conf_tmp = data_dir / f"tmp_{conf_name}"
                         
                         conf_column = "Download URL CONF" if mode == "flood" else "Download URL VEG-DIST-CONF"
                         has_conf = conf_column in cluster_df.columns and not cluster_df[conf_column].dropna().empty
@@ -1162,7 +1215,7 @@ def generate_products(
                                 "crs": mosaic_crs,
                                 "flight_dir": flight_dir}
                             
-                            future = executor.submit(
+                            future = ensure_executor().submit(
                                 run_plotting_task, maps_dir, layouts_dir, mosaic_path, short_name, layer,
                                 pass_id, layout_date, layout_title, bbox, zoom_bbox,
                                 reclassify_snow_ice, False, benchmark_mode=(benchmark_stats is not None),
@@ -1171,7 +1224,7 @@ def generate_products(
                             plotting_futures.append(future)
                             
                             if needs_conf:
-                                future = executor.submit(
+                                future = ensure_executor().submit(
                                     run_plotting_task, maps_dir, layouts_dir, conf_path, short_name, "CONF",
                                     pass_id, layout_date, layout_title, bbox, zoom_bbox,
                                     False, False, benchmark_mode=(benchmark_stats is not None),
@@ -1263,7 +1316,8 @@ def generate_products(
                                 crs_groups[crs_str].append(da_data)
 
                         all_warped_ds = []
-                        colormap = None 
+                        colormap = None
+                        warp_temp_dir = data_dir / ".warp_cache"
 
                         # Iterate through each CRS group to process and mosaic
                         for crs_str, ds_group in crs_groups.items():
@@ -1282,17 +1336,29 @@ def generate_products(
                                         ds_group, cmap_temp = reclassify_snow_ice_as_water(ds_group, current_conf_DS)
                                         if cmap_temp is not None: colormap = cmap_temp
 
-                            # Reproject to master grid
                             for i, da in enumerate(ds_group):
-                                grid_props = master_grid.copy()
-                                dst_crs_val = grid_props.pop("dst_crs")
-                                da_warped = da.rio.reproject(dst_crs_val, **grid_props, resampling=resampling_method)
+                                da_warped = warp_dataarray_to_grid(
+                                    da,
+                                    master_grid,
+                                    resampling_method,
+                                    warp_temp_dir,
+                                    temp_prefix=f"{short_name}_{layer}_{pass_id}_data_{i}",
+                                    username=username,
+                                    password=password,
+                                )
                                 
                                 # If processing WTR/BWTR, stack CONF as a second band to sync pixel selection
                                 if mode == "flood" and layer == "WTR" and current_conf_DS is not None and i < len(current_conf_DS):
                                     conf_da = current_conf_DS[i]
-                                    conf_warped = conf_da.rio.reproject(dst_crs_val, **grid_props, resampling=resampling_method)
-                                    
+                                    conf_warped = warp_dataarray_to_grid(
+                                        conf_da,
+                                        master_grid,
+                                        resampling_method,
+                                        warp_temp_dir,
+                                        temp_prefix=f"{short_name}_{layer}_{pass_id}_conf_{i}",
+                                        username=username,
+                                        password=password,
+                                    )
                                     # Concatenate into a single 2-band dataset
                                     combined = xr.concat([da_warped, conf_warped], dim="band")
                                     combined = combined.assign_coords(band=[1, 2])
@@ -1307,7 +1373,6 @@ def generate_products(
                                 colormap = get_image_colormap(DS[0])
                             except Exception:
                                 colormap = None
-                            
                         # Mosaic the datasets using the single global master grid setup
                         mosaic, _, nodata = mosaic_opera(all_warped_ds, product=short_name, merge_args={})
 
@@ -1357,12 +1422,19 @@ def generate_products(
                                     
                                     if dswx_ds_list:
                                         dswx_warped = []
+                                        warp_temp_dir = data_dir / ".warp_cache"
                                         # Reproject to master grid
-                                        for da_dswx in dswx_ds_list:
+                                        for j, da_dswx in enumerate(dswx_ds_list):
                                             try:
-                                                grid_props = master_grid.copy()
-                                                dst_crs_val = grid_props.pop("dst_crs")
-                                                da_w = da_dswx.rio.reproject(dst_crs_val, **grid_props, resampling=Resampling.nearest)
+                                                da_w = warp_dataarray_to_grid(
+                                                    da_dswx,
+                                                    master_grid,
+                                                    Resampling.nearest,
+                                                    warp_temp_dir,
+                                                    temp_prefix=f"water_mask_{date}_{j}",
+                                                    username=username,
+                                                    password=password,
+                                                )
                                                 dswx_warped.append(da_w)
                                             except Exception as e:
                                                 logger.warning(f"[Water Mask] Failed to reproject DSWx granule: {e}")
@@ -1403,20 +1475,16 @@ def generate_products(
                             else:
                                 logger.info("[Water Mask] No slope threshold (-st) specified. Skipping water-related disturbance filtering.")
 
-                        image = array_to_image(mosaic, colormap=colormap, nodata=nodata)
-                        
-                        # Save the mosaic to a temporary GeoTIFF
-                        copy(image, tmp_path, driver="GTiff")
-                        warp_args = {"xRes": 30, "yRes": 30, "creationOptions": ["COMPRESS=DEFLATE"]}
-                        
-                        # Reproject/compress using GDAL directly into the final GeoTIFF
-                        gdal.Warp(str(mosaic_path), str(tmp_path), **warp_args)
-                        
-                        # Convert to COG (writes back into mosaic_path)
+                        array_to_image(
+                            mosaic,
+                            output=mosaic_path,
+                            driver="GTiff",
+                            colormap=colormap,
+                            nodata=nodata,
+                        )
+
+                        # Translate the standard GTiff into a COG in-place
                         save_gtiff_as_cog(mosaic_path, mosaic_path)
-                        
-                        # Clean up tmp file
-                        cleanup_temp_file(tmp_path)
 
                         with rasterio.open(mosaic_path) as ds:
                             mosaic_crs = ds.crs
@@ -1431,7 +1499,7 @@ def generate_products(
                         # --- Background Plotting ---
                         logger.info(f"Submitting background plotting task for {pass_id}...")
                         if mode != "rtc-rgb":
-                            future = executor.submit(
+                            future = ensure_executor().submit(
                                 run_plotting_task,
                                 maps_dir, layouts_dir, mosaic_path, short_name, layer,
                                 pass_id, layout_date, layout_title, bbox, zoom_bbox,
@@ -1442,17 +1510,22 @@ def generate_products(
 
                         # Save and plot the perfectly synced CONF layer if we generated it
                         if conf_mosaic is not None:
-                            conf_image = array_to_image(conf_mosaic, colormap=conf_colormap, nodata=255)
-                            
-                            copy(conf_image, conf_tmp, driver="GTiff")
-                            gdal.Warp(str(conf_path), str(conf_tmp), **warp_args)
+                            array_to_image(
+                                conf_mosaic,
+                                output=conf_path,
+                                driver="GTiff",
+                                colormap=conf_colormap,
+                                nodata=255,
+                            )
+
+                            # Translate the standard GTiff into a COG in-place
                             save_gtiff_as_cog(conf_path, conf_path)
-                            cleanup_temp_file(conf_tmp)
+
                             logger.info(f"Saved spatially synchronized CONF layer: {conf_name}")
 
                             # Submit Plotting Task for CONF
                             if mode != "rtc-rgb":
-                                future = executor.submit(
+                                future = ensure_executor().submit(
                                     run_plotting_task,
                                     maps_dir, layouts_dir, conf_path, short_name, "CONF",
                                     pass_id, layout_date, layout_title, bbox, zoom_bbox,
@@ -1489,7 +1562,7 @@ def generate_products(
                     rgb_path = data_dir / rgb_name
                     
                     # Correctly submit the wrapper task instead of the core generation function
-                    future = executor.submit(
+                    future = ensure_executor().submit(
                         run_rgb_task, 
                         vv_path, vh_path, rgb_path, skip_existing=skip_existing
                     )
@@ -1528,7 +1601,7 @@ def generate_products(
                             diff_date_str_layout = f"{d_early}, {d_later}"
 
                             # Submit Pipeline Task (Compute Diff -> Map -> Layout)
-                            future = executor.submit(
+                            future = ensure_executor().submit(
                                 run_difference_pipeline,
                                 early_info["path"], later_info["path"], diff_path, mode,
                                 maps_dir, layouts_dir, short_name_k, layer_k,
@@ -1566,7 +1639,7 @@ def generate_products(
                 diff_id_str = f"{earliest_clean}_{latest_clean}"
                 diff_date_str_layout = f"{earliest_clean}, {latest_clean}"
                 
-                future = executor.submit(
+                future = ensure_executor().submit(
                     run_max_extent_pipeline,
                     input_paths, out_path,
                     maps_dir, layouts_dir, short_name_k, "MAX-EXTENT",
@@ -1592,4 +1665,7 @@ def generate_products(
             # Update Stats
             if 'plotting' in benchmark_stats: benchmark_stats['plotting']['seq'] = total_plotting_time
             if 'differencing' in benchmark_stats: benchmark_stats['differencing']['seq'] = total_diff_time
+
+        shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+
         logger.info("All tasks complete.")
