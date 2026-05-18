@@ -171,6 +171,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         logger.info("Earthquake mode coming soon. Exiting...")
         return None
 
+    if config.product and any(unsupported in config.product for unsupported in ["CSLC", "DISP"]):
+        logger.info(f"Product '{config.product}' is not currently supported for mosaic/map generation. Exiting...")
+        return None
+
     if not config.local_dir:
         try:
             username, password = authenticate()
@@ -415,6 +419,11 @@ def run_download_only(
     import shutil
     from opera_utils.disp._remote import open_file
     import concurrent.futures
+
+    # Pre-check for unsupported products before authenticating or downloading
+    if product and any(unsupported in product for unsupported in ["CSLC", "DISP"]):
+            logger.info(f"Downloading product '{product}' is not currently supported. Exiting...")
+            return None
 
     # Authenticate with Earthdata
     try:
