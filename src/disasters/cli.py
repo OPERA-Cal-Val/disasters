@@ -205,7 +205,7 @@ def run(
     if mode and product:
         raise click.UsageError("You cannot use both --mode and --product at the same time.")
     if not mode and not product:
-        raise click.UsageError("You must specify either --mode or --product.")
+        mode = "flood" # Default to flood mode if neither is provided
 
     # Ensure slope values are between 0 and 100 degrees, if provided
     if slope_threshold is not None and not (0 <= slope_threshold <= 100):
