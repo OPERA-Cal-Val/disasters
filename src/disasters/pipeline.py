@@ -86,11 +86,11 @@ class PipelineConfig:
     layout_title: str
     zoom_bbox: Sequence[float] | None = None
     local_dir: Path | None = None
-    short_name: str | None = None
+    product: str | None = None
     layer_name: str | None = None
     date: str | None = None
     number_of_dates: int = 5
-    mode: str = "flood"
+    mode: str | None = None
     functionality: str = "opera_search"
     filter_date: str | None = None
     reclassify_snow_ice: bool = False
@@ -105,6 +105,11 @@ def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], s
     """
     Calculates the global bounding box [S, N, W, E] and most common CRS 
     from a local DataFrame of OPERA products by reading their headers.
+    
+    Args:
+        df_opera (pd.DataFrame): DataFrame containing OPERA metadata with download URLs.
+    Returns:
+        tuple: ([S, N, W, E], most_common_crs_proj4)
     """
     logger.info("Calculating spatial properties from local files...")
     url_cols = [c for c in df_opera.columns if c.startswith("Download URL")]
@@ -166,6 +171,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         logger.info("Earthquake mode coming soon. Exiting...")
         return None
 
+    if config.product and any(unsupported in config.product for unsupported in ["CSLC", "DISP"]):
+        logger.info(f"Product '{config.product}' is not currently supported for mosaic/map generation. Exiting...")
+        return None
+
     if not config.local_dir:
         try:
             username, password = authenticate()
@@ -177,7 +186,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         username, password = None, None
 
     ensure_directory(config.output_dir)
-    mode_dir = config.output_dir / config.mode
+    
+    folder_name = config.mode if config.mode else config.product
+    mode_dir = config.output_dir / folder_name
 
     if config.local_dir:
         logger.info(f"Running in LOCAL mode using data from: {config.local_dir}")
@@ -262,7 +273,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         username=username,
         password=password,
         no_mask=config.no_mask,
-        skip_existing=config.skip_existing
+        skip_existing=config.skip_existing,
+        product=config.product
     )
 
     if config.benchmark and benchmark_stats:
@@ -302,6 +314,7 @@ def run_search_only(
     date: str | None = None,
     number_of_dates: int = 5,
     mode: str | None = None,
+    product: str | None = None,
     functionality: str = "opera_search",
     compute_cloudiness: bool = False
 ) -> Path | None:
@@ -314,6 +327,7 @@ def run_search_only(
         date (str | None): Optional date string for filtering products.
         number_of_dates (int): Number of dates to retrieve if 'date' is specified.
         mode (str | None): If specified, filters the metadata summary to only include relevant datasets/layers for this mode.
+        product (str | None): If specified, filters the metadata summary to only include this specific product.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
     """
     import shutil
@@ -349,8 +363,8 @@ def run_search_only(
         logger.warning("No products found for the specified criteria.")
         return output_dir_np
 
-    # If mode is provided, calculate how many of those found granules actually apply to the mode
-    if mode is not None:
+    # If mode or product is provided, calculate how many of those found granules actually apply
+    if mode:
         if mode == "flood":
             short_names = ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1"]
         elif mode == "fire":
@@ -364,9 +378,15 @@ def run_search_only(
             return None
         else:
             short_names = []
-
+            
         df_filtered = df_opera[df_opera["Dataset"].isin(short_names)]
         logger.info(f"Search complete. Found {len(df_filtered)} granules relevant to '{mode}' mode (out of {len(df_opera)} total).")
+    
+    elif product:
+        short_names = [product]
+        df_filtered = df_opera[df_opera["Dataset"].isin(short_names)]
+        logger.info(f"Search complete. Found {len(df_filtered)} granules matching product '{product}' (out of {len(df_opera)} total).")
+        
     else:
         logger.info(f"Search complete. Found {len(df_opera)} total OPERA granules.")
 
@@ -379,6 +399,7 @@ def run_download_only(
     date: str | None = None, 
     number_of_dates: int = 5, 
     mode: str | None = None,
+    product: str | None = None,
     functionality: str = "opera_search",
     compute_cloudiness: bool = False
 ) -> Path | None:
@@ -392,11 +413,17 @@ def run_download_only(
         date (str | None): Optional date string for filtering products.
         number_of_dates (int): Number of dates to retrieve if 'date' is specified.
         mode (str | None): If specified, filters downloads to only include relevant datasets/layers for this mode.
+        product (str | None): If specified, filters downloads to only include this specific product.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
     """
     import shutil
     from opera_utils.disp._remote import open_file
     import concurrent.futures
+
+    # Pre-check for unsupported products before authenticating or downloading
+    if product and any(unsupported in product for unsupported in ["CSLC", "DISP"]):
+            logger.info(f"Downloading product '{product}' is not currently supported. Exiting...")
+            return None
 
     # Authenticate with Earthdata
     try:
@@ -430,8 +457,8 @@ def run_download_only(
         logger.warning("No products found for the specified criteria.")
         return None
 
-    # Apply Mode Filtering if requested
-    if mode is not None:
+    # Apply Filtering if requested
+    if mode:
         logger.info(f"Filtering downloads for '{mode}' mode...")
         
         # Define target datasets and primary + auxiliary layers
@@ -457,12 +484,28 @@ def run_download_only(
         # Filter URL columns by Layer
         url_cols = [f"Download URL {layer}" for layer in target_layers if f"Download URL {layer}" in df_opera.columns]
         
+    elif product:
+        logger.info(f"Filtering downloads for '{product}' product...")
+        short_names = [product]
+        if "DSWX" in product:
+            target_layers = ["WTR", "BWTR", "CONF"]
+        elif "DIST" in product:
+            target_layers = ["VEG-ANOM-MAX", "VEG-DIST-STATUS", "VEG-DIST-DATE", "VEG-DIST-CONF"]
+        elif "RTC" in product:
+            target_layers = ["RTC-VV", "RTC-VH"]
+        else:
+            logger.info(f"Downloading product '{product}' is not currently supported. Exiting...")
+            return None
+            
+        df_opera = df_opera[df_opera["Dataset"].isin(short_names)]
+        url_cols = [f"Download URL {layer}" for layer in target_layers if f"Download URL {layer}" in df_opera.columns]
+
     else:
-        logger.info("No mode specified. Downloading ALL available OPERA products and layers.")
+        logger.info("No mode or product specified. Downloading ALL available OPERA products and layers.")
         url_cols = [c for c in df_opera.columns if c.startswith("Download URL")]
 
     if df_opera.empty or not url_cols:
-        logger.warning(f"No corresponding products found in the catalog for mode: {mode}")
+        logger.warning(f"No corresponding products found in the catalog for the specified criteria.")
         return None
 
     # Copy the metadata excel file to the user's output directory
@@ -943,7 +986,7 @@ def generate_products(
     df_opera, mode, mode_dir: Path, layout_title: str, bbox: list[float], zoom_bbox: list[float] | None,
     filter_date: str | None = None, reclassify_snow_ice: bool = False, slope_threshold: int | None = None,
     benchmark_stats: dict | None = None, username: str | None = None, password: str | None = None,
-    no_mask: bool = False, skip_existing: bool = False
+    no_mask: bool = False, skip_existing: bool = False, product: str | None = None
 ) -> None:
     """
     Generate mosaicked products, maps, and layouts based on the provided DataFrame and mode. 
@@ -964,33 +1007,49 @@ def generate_products(
         password (str | None): Earthdata auth credentials.
         no_mask (bool): If True, skips coastal masking step.
         skip_existing (bool): If True, skips processing steps for outputs that already exist.
+        product (str | None): Specific OPERA product to generate (overrides mode).
 
     Returns:
         None
     """
     import shutil
-
-    # Define short names and layer names based on mode FIRST
-    if mode == "flood":
-        short_names = ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1"]
-        layer_names = ["WTR", "BWTR"]
-    elif mode == "fire":
-        short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ALERT-S1_V1"]
-        layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS"]
-    elif mode == "landslide":
-        short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L2_RTC-S1_V1"]
-        layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS", "RTC-VV", "RTC-VH"]
-    elif mode == "rtc-rgb":
-        short_names = ["OPERA_L2_RTC-S1_V1"]
-        layer_names = ["RTC-VV", "RTC-VH"]
-    elif mode == "earthquake":
-        logger.info("Earthquake mode coming soon. Exiting...")
-        return
-    
+    # Define short names and layer names based on mode or product FIRST
+    if mode:
+        if mode == "flood":
+            short_names = ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1"]
+            layer_names = ["WTR", "BWTR"]
+        elif mode == "fire":
+            short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ALERT-S1_V1"]
+            layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS"]
+        elif mode == "landslide":
+            short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L2_RTC-S1_V1"]
+            layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS", "RTC-VV", "RTC-VH"]
+        elif mode == "rtc-rgb":
+            short_names = ["OPERA_L2_RTC-S1_V1"]
+            layer_names = ["RTC-VV", "RTC-VH"]
+        elif mode == "earthquake":
+            logger.info("Earthquake mode coming soon. Exiting...")
+            return
+            
+    elif product:
+        short_names = [product]
+        if "DSWX" in product:
+            layer_names = ["WTR", "BWTR"]
+            mode = "flood" # Inherit mode logic for downstream processing
+        elif "DIST" in product:
+            layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS"]
+            mode = "fire"
+        elif "RTC" in product:
+            layer_names = ["RTC-VV", "RTC-VH"]
+            mode = "rtc-rgb"
+        else:
+            logger.info(f"Product '{product}' is not currently supported for mosaic/map generation. Exiting...")
+            return
+            
     # Filter to see if we have ANY data for the products required by this mode, if not, exit
     df_mode_data = df_opera[df_opera["Dataset"].isin(short_names)]
     if df_mode_data.empty:
-        logger.warning(f"No {mode.upper()} products ({', '.join(short_names)}) found for this date range. Exiting gracefully.")
+        logger.warning(f"No corresponding products ({', '.join(short_names)}) found for this date range. Exiting gracefully.")
         return
 
     # Create directories
@@ -1541,6 +1600,8 @@ def generate_products(
                             for da in conf_DS: da.close()
                         if date_DS is not None:
                             for da in date_DS: da.close()
+
+            shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
 
         # RTC RGB Visualization Generation
         if mode in ["landslide", "rtc-rgb"] and "OPERA_L2_RTC-S1_V1" in mosaic_index:
