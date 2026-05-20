@@ -86,7 +86,8 @@ class PipelineConfig:
     layout_title: str
     zoom_bbox: Sequence[float] | None = None
     local_dir: Path | None = None
-    product: str | None = None
+    search_dir: Path | None = None
+    product: str | list[str] | None = None
     layer_name: str | None = None
     date: str | None = None
     number_of_dates: int = 5
@@ -99,6 +100,8 @@ class PipelineConfig:
     no_mask: bool = False
     compute_cloudiness: bool = False
     skip_existing: bool = False
+    functionality: str = "opera_search" 
+    satellites: list[str] | None = None
 
 
 def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], str]:
@@ -166,6 +169,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                      or None if exited early (e.g., earthquake mode).
     """
     from datetime import datetime, timezone
+    import shutil
 
     if config.mode == "earthquake":
         logger.info("Earthquake mode coming soon. Exiting...")
@@ -198,32 +202,57 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         df_opera = scan_local_directory(config.local_dir)
         if df_opera.empty: return None
         ensure_directory(mode_dir)
-    else:
-        # Cloud Logic
-        logger.info("Running in CLOUD SEARCH mode.")
-
-        next_pass_bbox = [config.bbox] if isinstance(config.bbox, str) else config.bbox
+    
+    elif config.search_dir and (config.search_dir / "opera_products_metadata.xlsx").exists():
+        logger.info(f"Running in CLOUD mode using CACHED search metadata from: {config.search_dir}")
+        df_opera = read_opera_metadata(config.search_dir)
+        ensure_directory(mode_dir)
         
-        output_dir = next_pass.run_next_pass(
+        # Copy any existing HTML maps from the cache forward to the disasters folder
+        for html_map in config.search_dir.glob("*.html"):
+            shutil.copy(html_map, mode_dir / html_map.name)
+            
+    else:
+        logger.info("Running in CLOUD SEARCH mode.")
+        next_pass_bbox = [config.bbox] if isinstance(config.bbox, str) else config.bbox
+
+        # Strip the OPERA_L2/L3 prefix for next_pass compatibility
+        if isinstance(config.product, list):
+            np_prod = [p.replace("OPERA_L3_", "").replace("OPERA_L2_", "") for p in config.product]
+        else:
+            np_prod = [config.product.replace("OPERA_L3_", "").replace("OPERA_L2_", "")] if config.product else None
+
+        output_dir_np = next_pass.run_next_pass(
             bbox=next_pass_bbox,
             number_of_dates=config.number_of_dates,
             date=config.date,
             functionality=config.functionality,
-            compute_cloudiness=config.compute_cloudiness
+            compute_cloudiness=config.compute_cloudiness,
+            products=np_prod,
+            satellites=config.satellites
         )
         
-        output_dir = Path(output_dir)
-        dest = config.output_dir / output_dir.name
+        if not output_dir_np:
+            logger.error("next_pass did not return an output directory.")
+            return None
+
+        np_path = Path(output_dir_np)
+        dest = config.output_dir / np_path.name
         
-        if output_dir.resolve() != dest.resolve():
+        if np_path.resolve() != dest.resolve():
             if not dest.exists():
-                output_dir.rename(dest)
+                np_path.rename(dest)
                 processing_dir = dest
             else:
                 logger.warning(f"Destination {dest} already exists. Using existing folder.")
                 processing_dir = dest
         else:
-            processing_dir = output_dir
+            processing_dir = np_path
+
+        # Copy the  HTML maps into the final tif mode directory
+        mode_dir.mkdir(parents=True, exist_ok=True)
+        for html_map in processing_dir.glob("*.html"):
+            shutil.copy(html_map, mode_dir / html_map.name)
             
         # Read OPERA metadata returned by next_pass
         df_opera = read_opera_metadata(processing_dir)
@@ -314,9 +343,10 @@ def run_search_only(
     date: str | None = None,
     number_of_dates: int = 5,
     mode: str | None = None,
-    product: str | None = None,
+    product: str | list[str] | None = None,
     functionality: str = "opera_search",
-    compute_cloudiness: bool = False
+    compute_cloudiness: bool = False,
+    satellites: list[str] | None = None
 ) -> Path | None:
     """
     Runs next_pass to discover products and generate metadata without downloading imagery.
@@ -329,6 +359,7 @@ def run_search_only(
         mode (str | None): If specified, filters the metadata summary to only include relevant datasets/layers for this mode.
         product (str | None): If specified, filters the metadata summary to only include this specific product.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
+        satellites (list[str] | None): Optional list of satellite platforms to filter products (e.g., ["Sentinel-1", "Sentinel-2", "Landsat", "NISAR"]).
     """
     import shutil
 
@@ -337,13 +368,21 @@ def run_search_only(
     logger.info("Running Cloud Search to discover available granules...")
     next_pass_bbox = [bbox] if isinstance(bbox, str) else bbox
 
+    # Strip the OPERA_L2/L3 prefix for next_pass compatibility
+    if isinstance(product, list):
+        np_prod = [p.replace("OPERA_L3_", "").replace("OPERA_L2_", "") for p in product]
+    else:
+        np_prod = [product.replace("OPERA_L3_", "").replace("OPERA_L2_", "")] if product else None
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
         number_of_dates=number_of_dates,
         date=date,
         functionality=functionality,
-        compute_cloudiness=compute_cloudiness
+        compute_cloudiness=compute_cloudiness,
+        products=np_prod,
+        satellites=satellites
     )
 
     output_dir_np = Path(output_dir_np)
@@ -383,9 +422,9 @@ def run_search_only(
         logger.info(f"Search complete. Found {len(df_filtered)} granules relevant to '{mode}' mode (out of {len(df_opera)} total).")
     
     elif product:
-        short_names = [product]
+        short_names = product if isinstance(product, list) else [product]
         df_filtered = df_opera[df_opera["Dataset"].isin(short_names)]
-        logger.info(f"Search complete. Found {len(df_filtered)} granules matching product '{product}' (out of {len(df_opera)} total).")
+        logger.info(f"Search complete. Found {len(df_filtered)} granules matching requested products (out of {len(df_opera)} total).")
         
     else:
         logger.info(f"Search complete. Found {len(df_opera)} total OPERA granules.")
@@ -440,13 +479,17 @@ def run_download_only(
     logger.info("Running Cloud Search to discover available granules...")
     next_pass_bbox = [bbox] if isinstance(bbox, str) else bbox
     
+    # Strip the OPERA_L2/L3 prefix for next_pass compatibility
+    np_prod = product.replace("OPERA_L3_", "").replace("OPERA_L2_", "") if product else None
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
         number_of_dates=number_of_dates,
         date=date,
         functionality=functionality,
-        compute_cloudiness=compute_cloudiness
+        compute_cloudiness=compute_cloudiness,
+        products=[np_prod] if np_prod else None
     )
     
     output_dir_np = Path(output_dir_np)
