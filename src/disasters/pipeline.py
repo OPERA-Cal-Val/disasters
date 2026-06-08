@@ -3,6 +3,7 @@ from __future__ import annotations
 # Standard Library Imports
 import concurrent.futures
 import logging
+import os
 import re
 import time
 from collections import Counter, defaultdict
@@ -52,6 +53,9 @@ logger = logging.getLogger(__name__)
 
 gdal.DontUseExceptions()
 
+# Force GDAL to automatically retry on 502s, 503s, and timeouts
+os.environ["GDAL_HTTP_MAX_RETRY"] = "10"
+os.environ["GDAL_HTTP_RETRY_DELAY"] = "5"
 
 class DeferredExecutor:
     """Collect submitted work and run it sequentially at shutdown."""
@@ -600,13 +604,26 @@ def run_download_only(
             return
             
         logger.info(f"Downloading {filename}...")
-        try:
-            # Use Earthdata authenticated file opener and stream to disk chunk-by-chunk
-            with open_file(url, earthdata_username=username, earthdata_password=password) as f_in:
-                with open(local_path, 'wb') as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-        except Exception as e:
-            logger.error(f"Failed to download {filename}: {e}")
+
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                # Use Earthdata authenticated file opener and stream to disk
+                with open_file(url, earthdata_username=username, earthdata_password=password) as f_in:
+                    with open(local_path, 'wb') as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                break  # Break out of the loop on success!
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    sleep_time = 2 ** attempt
+                    logger.warning(
+                        f"Network error on {filename}. "
+                        f"Retrying now (Attempt {attempt + 1}/{max_retries}) in {sleep_time}s..."
+                    )
+                    time.sleep(sleep_time)
+                else:
+                    logger.error(f"Failed to download {filename} after {max_retries} attempts: {e}")
 
     # Download concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
