@@ -506,7 +506,7 @@ def run_download_only(
         date=date,
         functionality=functionality,
         compute_cloudiness=compute_cloudiness,
-        products=[np_prod] if np_prod else None
+        products=np_prod
     )
     
     output_dir_np = Path(output_dir_np)
