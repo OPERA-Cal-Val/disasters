@@ -21,6 +21,7 @@ VALID_SHORT_NAMES = [
     "OPERA_L3_DISP-S1_V1",
 ]
 
+VALID_SATELLITES = ["sentinel-1", "sentinel-2", "landsat", "nisar"]
 VALID_LAYER_NAMES = ["WTR", "BWTR", "VEG-ANOM-MAX", "VEG-DIST-STATUS"]
 VALID_MODES = ["flood", "fire", "landslide", "earthquake", "rtc-rgb"]
 VALID_FUNCTIONS = ["opera_search", "both"]
@@ -70,11 +71,28 @@ def cli() -> None:
     help="Path to a local directory containing pre-downloaded OPERA geotiffs. If provided, cloud search is skipped.",
 )
 @click.option(
+    "-sd",
+    "--search-dir",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
+    required=False,
+    default=None,
+    help="Path to a cached catalog search directory to bypass remote Earthdata querying.",
+)
+@click.option(
     "-p",
     "--product",
     type=click.Choice(VALID_SHORT_NAMES),
+    multiple=True,
     default=None,
-    help="Target a specific OPERA product for generation (Mutually exclusive with --mode).",
+    help="Target specific OPERA products. Can be provided multiple times.",
+)
+@click.option(
+    "-s",
+    "--satellites",
+    type=click.Choice(VALID_SATELLITES, case_sensitive=False),
+    multiple=True,
+    default=None,
+    help="Target specific satellite platforms. Can be provided multiple times.",
 )
 @click.option(
     "-l",
@@ -186,7 +204,9 @@ def run(
     zoom_bbox: Optional[str],
     output_dir: Path,
     local_dir: Optional[Path],
-    product: Optional[str],
+    search_dir: Optional[Path],
+    product: tuple[str, ...],
+    satellites: tuple[str, ...],
     layer_name: Optional[str],
     date: Optional[str],
     number_of_dates: int,
@@ -241,7 +261,9 @@ def run(
         zoom_bbox=zoom_bbox_arg,
         output_dir=output_dir,
         local_dir=local_dir,
-        product=product,
+        search_dir=search_dir,
+        product=list(product) if product else None,
+        satellites=list(satellites) if satellites else None,
         layer_name=layer_name,
         date=date,
         number_of_dates=number_of_dates,
@@ -309,8 +331,17 @@ def run(
     "-p",
     "--product",
     type=click.Choice(VALID_SHORT_NAMES),
+    multiple=True,
     default=None,
-    help="Target a specific OPERA product for generation (Mutually exclusive with --mode).",
+    help="Target specific OPERA products. Can be provided multiple times.",
+)
+@click.option(
+    "-s",
+    "--satellites",
+    type=click.Choice(VALID_SATELLITES, case_sensitive=False),
+    multiple=True,
+    default=None,
+    help="Target specific satellite platforms. Can be provided multiple times.",
 )
 @click.option(
     "-c",
@@ -325,7 +356,8 @@ def search(
     date: Optional[str],
     number_of_dates: int,
     mode: Optional[str],
-    product: Optional[str],
+    product: tuple[str, ...],
+    satellites: tuple[str, ...],
     compute_cloudiness: bool
 ) -> None:
     """Query OPERA catalog and save metadata without downloading imagery."""
@@ -351,7 +383,8 @@ def search(
         date=date,
         number_of_dates=number_of_dates,
         mode=mode,
-        product=product,
+        product=list(product) if product else None,
+        satellites=list(satellites) if satellites else None,
         compute_cloudiness=compute_cloudiness
     )
     
@@ -406,8 +439,9 @@ def search(
     "-p",
     "--product",
     type=click.Choice(VALID_SHORT_NAMES),
+    multiple=True,
     default=None,
-    help="Target a specific OPERA product for generation (Mutually exclusive with --mode).",
+    help="Target specific OPERA products. Can be provided multiple times.",
 )
 @click.option(
     "-c",
@@ -423,7 +457,7 @@ def download(
     date: Optional[str],
     number_of_dates: int,
     mode: Optional[str],
-    product: Optional[str],
+    product: tuple[str, ...],
     compute_cloudiness: bool
 ) -> None:
     """Download OPERA granules over an AOI/time window for local use."""
@@ -449,7 +483,7 @@ def download(
         date=date,
         number_of_dates=number_of_dates,
         mode=mode,
-        product=product,
+        product=list(product) if product else None,
         compute_cloudiness=compute_cloudiness
     )
     

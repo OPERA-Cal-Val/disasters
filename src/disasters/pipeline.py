@@ -86,12 +86,12 @@ class PipelineConfig:
     layout_title: str
     zoom_bbox: Sequence[float] | None = None
     local_dir: Path | None = None
-    product: str | None = None
+    search_dir: Path | None = None
+    product: str | list[str] | None = None
     layer_name: str | None = None
     date: str | None = None
     number_of_dates: int = 5
     mode: str | None = None
-    functionality: str = "opera_search"
     filter_date: str | None = None
     reclassify_snow_ice: bool = False
     slope_threshold: int | None = None
@@ -99,6 +99,8 @@ class PipelineConfig:
     no_mask: bool = False
     compute_cloudiness: bool = False
     skip_existing: bool = False
+    functionality: str = "opera_search" 
+    satellites: list[str] | None = None
 
 
 def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], str]:
@@ -166,14 +168,17 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                      or None if exited early (e.g., earthquake mode).
     """
     from datetime import datetime, timezone
+    import shutil
 
     if config.mode == "earthquake":
         logger.info("Earthquake mode coming soon. Exiting...")
         return None
 
-    if config.product and any(unsupported in config.product for unsupported in ["CSLC", "DISP"]):
-        logger.info(f"Product '{config.product}' is not currently supported for mosaic/map generation. Exiting...")
-        return None
+    if config.product:
+        prod_str = " ".join(config.product) if isinstance(config.product, list) else config.product
+        if any(unsupported in prod_str for unsupported in ["CSLC", "DISP"]):
+            logger.info(f"Product '{config.product}' is not currently supported for mosaic/map generation. Exiting...")
+            return None
 
     if not config.local_dir:
         try:
@@ -187,8 +192,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     ensure_directory(config.output_dir)
     
-    folder_name = config.mode if config.mode else config.product
-    mode_dir = config.output_dir / folder_name
+    html_maps_source = None
 
     if config.local_dir:
         logger.info(f"Running in LOCAL mode using data from: {config.local_dir}")
@@ -196,55 +200,65 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             logger.error(f"Local directory {config.local_dir} does not exist.")
             return None
         df_opera = scan_local_directory(config.local_dir)
-        if df_opera.empty: return None
-        ensure_directory(mode_dir)
+        if df_opera.empty:
+            return None
+    
+    elif config.search_dir and (config.search_dir / "opera_products_metadata.xlsx").exists():
+        logger.info(f"Running in CLOUD mode using CACHED search metadata from: {config.search_dir}")
+        df_opera = read_opera_metadata(config.search_dir)
+        html_maps_source = config.search_dir
+            
     else:
-        # Cloud Logic
         logger.info("Running in CLOUD SEARCH mode.")
-
         next_pass_bbox = [config.bbox] if isinstance(config.bbox, str) else config.bbox
-        
-        output_dir = next_pass.run_next_pass(
+
+        # Strip the OPERA_L2/L3 prefix for next_pass compatibility
+        if isinstance(config.product, list):
+            np_prod = [p.replace("OPERA_L3_", "").replace("OPERA_L2_", "") for p in config.product]
+        else:
+            np_prod = [config.product.replace("OPERA_L3_", "").replace("OPERA_L2_", "")] if config.product else None
+
+        output_dir_np = next_pass.run_next_pass(
             bbox=next_pass_bbox,
             number_of_dates=config.number_of_dates,
             date=config.date,
             functionality=config.functionality,
-            compute_cloudiness=config.compute_cloudiness
+            compute_cloudiness=config.compute_cloudiness,
+            products=np_prod,
+            satellites=config.satellites
         )
         
-        output_dir = Path(output_dir)
-        dest = config.output_dir / output_dir.name
+        if not output_dir_np:
+            logger.error("next_pass did not return an output directory.")
+            return None
+
+        np_path = Path(output_dir_np)
+        dest = config.output_dir / np_path.name
         
-        if output_dir.resolve() != dest.resolve():
+        if np_path.resolve() != dest.resolve():
             if not dest.exists():
-                output_dir.rename(dest)
+                np_path.rename(dest)
                 processing_dir = dest
             else:
                 logger.warning(f"Destination {dest} already exists. Using existing folder.")
                 processing_dir = dest
         else:
-            processing_dir = output_dir
-            
-        # Read OPERA metadata returned by next_pass
-        df_opera = read_opera_metadata(processing_dir)
-        
-        # Ensure mode directory exists
-        ensure_directory(mode_dir)
+            processing_dir = np_path
 
-    logger.info(f"Outputting results to: {mode_dir}")
+        df_opera = read_opera_metadata(processing_dir)
+        html_maps_source = processing_dir
 
     # Convert WKT/File to an SNWE list for internal mosaicking logic
     if isinstance(config.bbox, str):
-        # Use next_pass parsers for both local and cloud modes
         try:
             from utils.utils import bbox_type, bbox_to_geometry
             bbox_parsed = bbox_type([config.bbox])
-            geom, bounds, centroid = bbox_to_geometry(bbox_parsed, mode_dir)
+            geom, bounds, centroid = bbox_to_geometry(bbox_parsed, config.output_dir)
             minx, miny, maxx, maxy = bounds
             internal_bbox = [miny, maxy, minx, maxx]
             logger.info(f"Extracted SNWE bounding envelope from geometry: {internal_bbox}")
         except Exception as e:
-            logger.error(f"Failed to parse geometry from string/file (KML, GeoJSON, WKT): {e}")
+            logger.error(f"Failed to parse geometry from string/file: {e}")
             return None
     else:
         internal_bbox = list(config.bbox)
@@ -258,44 +272,65 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             'differencing': {'seq': 0.0, 'conc': 0.0}
         }
 
-    # Generate products
-    generate_products(
-        df_opera=df_opera,
-        mode=config.mode,
-        mode_dir=mode_dir,
-        layout_title=config.layout_title,
-        bbox=internal_bbox,
-        zoom_bbox=list(config.zoom_bbox) if config.zoom_bbox is not None else None,
-        filter_date=config.filter_date,
-        reclassify_snow_ice=config.reclassify_snow_ice,
-        slope_threshold=config.slope_threshold,
-        benchmark_stats=benchmark_stats,
-        username=username,
-        password=password,
-        no_mask=config.no_mask,
-        skip_existing=config.skip_existing,
-        product=config.product
-    )
+    # Dynamically structure runs based on whether the user requested a mode or specific products
+    runs = []
+    if config.mode:
+        runs.append({"mode": config.mode, "product": config.product, "folder_name": config.mode})
+    elif isinstance(config.product, list):
+        for p in config.product:
+            runs.append({"mode": None, "product": p, "folder_name": p})
+    else:
+        p = config.product or "pipeline_output"
+        runs.append({"mode": None, "product": p, "folder_name": p})
+
+    success_dirs = []
+
+    for run_params in runs:
+        mode_dir = config.output_dir / run_params["folder_name"]
+        ensure_directory(mode_dir)
+
+        # Copy HTML maps into each dedicated directory
+        if html_maps_source:
+            for html_map in html_maps_source.glob("*.html"):
+                shutil.copy(html_map, mode_dir / html_map.name)
+
+        logger.info(f"Outputting results for {run_params['folder_name']} to: {mode_dir}")
+
+        generate_products(
+            df_opera=df_opera,
+            mode=run_params["mode"],
+            mode_dir=mode_dir,
+            layout_title=config.layout_title,
+            bbox=internal_bbox,
+            zoom_bbox=list(config.zoom_bbox) if config.zoom_bbox is not None else None,
+            filter_date=config.filter_date,
+            reclassify_snow_ice=config.reclassify_snow_ice,
+            slope_threshold=config.slope_threshold,
+            benchmark_stats=benchmark_stats,
+            username=username,
+            password=password,
+            no_mask=config.no_mask,
+            skip_existing=config.skip_existing,
+            product=run_params["product"]
+        )
+        success_dirs.append(mode_dir)
 
     if config.benchmark and benchmark_stats:
         print("\n" + "="*50)
         print("FINAL BENCHMARK REPORT")
         print("="*50)
         
-        # Report benchmarking results for the 'loading' stage
         l_seq = benchmark_stats['loading']['seq']
         l_conc = benchmark_stats['loading']['conc']
         l_saved = l_seq - l_conc
         print(f"DATA LOADING:\n  Sequential: {l_seq:.2f}s | Concurrent: {l_conc:.2f}s\n  Saved:      {l_saved:.2f}s")
         
-        # Report benchmarking results for the 'differencing' stage
         d_seq = benchmark_stats['differencing']['seq']
         d_conc = benchmark_stats['differencing']['conc']
         d_saved = d_seq - d_conc
         if d_seq > 0:
             print(f"DIFFERENCING (Backgrounded):\n  Sequential: {d_seq:.2f}s | Concurrent: ~0s (Overlapped)\n  Saved:      {d_saved:.2f}s")
         
-        # Report benchmarking results for the 'plotting' stage
         p_seq = benchmark_stats['plotting']['seq']
         p_conc = benchmark_stats['plotting']['conc']
         p_saved = p_seq - p_conc
@@ -305,7 +340,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         print(f"TOTAL TIME SAVED: {l_saved + d_saved + p_saved:.2f}s")
         print("="*50 + "\n")
 
-    return mode_dir
+    # If multiple products were requested, return the parent directory so downstream apps can find everything
+    if not success_dirs:
+        return None
+    elif len(success_dirs) == 1:
+        return success_dirs[0]
+    else:
+        return config.output_dir
 
 
 def run_search_only(
@@ -314,9 +355,10 @@ def run_search_only(
     date: str | None = None,
     number_of_dates: int = 5,
     mode: str | None = None,
-    product: str | None = None,
+    product: str | list[str] | None = None,
     functionality: str = "opera_search",
-    compute_cloudiness: bool = False
+    compute_cloudiness: bool = False,
+    satellites: list[str] | None = None
 ) -> Path | None:
     """
     Runs next_pass to discover products and generate metadata without downloading imagery.
@@ -329,6 +371,7 @@ def run_search_only(
         mode (str | None): If specified, filters the metadata summary to only include relevant datasets/layers for this mode.
         product (str | None): If specified, filters the metadata summary to only include this specific product.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
+        satellites (list[str] | None): Optional list of satellite platforms to filter products (e.g., ["sentinel-1", "sentinel-2", "landsat", "nisar"]).
     """
     import shutil
 
@@ -337,13 +380,21 @@ def run_search_only(
     logger.info("Running Cloud Search to discover available granules...")
     next_pass_bbox = [bbox] if isinstance(bbox, str) else bbox
 
+    # Strip the OPERA_L2/L3 prefix for next_pass compatibility
+    if isinstance(product, list):
+        np_prod = [p.replace("OPERA_L3_", "").replace("OPERA_L2_", "") for p in product]
+    else:
+        np_prod = [product.replace("OPERA_L3_", "").replace("OPERA_L2_", "")] if product else None
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
         number_of_dates=number_of_dates,
         date=date,
         functionality=functionality,
-        compute_cloudiness=compute_cloudiness
+        compute_cloudiness=compute_cloudiness,
+        products=np_prod,
+        satellites=satellites
     )
 
     output_dir_np = Path(output_dir_np)
@@ -383,9 +434,9 @@ def run_search_only(
         logger.info(f"Search complete. Found {len(df_filtered)} granules relevant to '{mode}' mode (out of {len(df_opera)} total).")
     
     elif product:
-        short_names = [product]
+        short_names = product if isinstance(product, list) else [product]
         df_filtered = df_opera[df_opera["Dataset"].isin(short_names)]
-        logger.info(f"Search complete. Found {len(df_filtered)} granules matching product '{product}' (out of {len(df_opera)} total).")
+        logger.info(f"Search complete. Found {len(df_filtered)} granules matching requested products (out of {len(df_opera)} total).")
         
     else:
         logger.info(f"Search complete. Found {len(df_opera)} total OPERA granules.")
@@ -399,7 +450,7 @@ def run_download_only(
     date: str | None = None, 
     number_of_dates: int = 5, 
     mode: str | None = None,
-    product: str | None = None,
+    product: str | list[str] | tuple[str, ...] | None = None,
     functionality: str = "opera_search",
     compute_cloudiness: bool = False
 ) -> Path | None:
@@ -413,7 +464,7 @@ def run_download_only(
         date (str | None): Optional date string for filtering products.
         number_of_dates (int): Number of dates to retrieve if 'date' is specified.
         mode (str | None): If specified, filters downloads to only include relevant datasets/layers for this mode.
-        product (str | None): If specified, filters downloads to only include this specific product.
+        product (str | list[str] | None): If specified, filters downloads to only include this specific product or list of products.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
     """
     import shutil
@@ -421,7 +472,9 @@ def run_download_only(
     import concurrent.futures
 
     # Pre-check for unsupported products before authenticating or downloading
-    if product and any(unsupported in product for unsupported in ["CSLC", "DISP"]):
+    if product:
+        prod_str = " ".join(product) if isinstance(product, list) else product
+        if any(unsupported in prod_str for unsupported in ["CSLC", "DISP"]):
             logger.info(f"Downloading product '{product}' is not currently supported. Exiting...")
             return None
 
@@ -440,13 +493,20 @@ def run_download_only(
     logger.info("Running Cloud Search to discover available granules...")
     next_pass_bbox = [bbox] if isinstance(bbox, str) else bbox
     
+    # Strip the OPERA_L2/L3 prefix for next_pass compatibility
+    if isinstance(product, (list, tuple)):
+        np_prod = [p.replace("OPERA_L3_", "").replace("OPERA_L2_", "") for p in product]
+    else:
+        np_prod = [product.replace("OPERA_L3_", "").replace("OPERA_L2_", "")] if product else None
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
         number_of_dates=number_of_dates,
         date=date,
         functionality=functionality,
-        compute_cloudiness=compute_cloudiness
+        compute_cloudiness=compute_cloudiness,
+        products=np_prod
     )
     
     output_dir_np = Path(output_dir_np)
@@ -486,14 +546,18 @@ def run_download_only(
         
     elif product:
         logger.info(f"Filtering downloads for '{product}' product...")
-        short_names = [product]
-        if "DSWX" in product:
-            target_layers = ["WTR", "BWTR", "CONF"]
-        elif "DIST" in product:
-            target_layers = ["VEG-ANOM-MAX", "VEG-DIST-STATUS", "VEG-DIST-DATE", "VEG-DIST-CONF"]
-        elif "RTC" in product:
-            target_layers = ["RTC-VV", "RTC-VH"]
-        else:
+        short_names = product if isinstance(product, list) else [product]
+        prod_str = " ".join(short_names)
+        
+        target_layers = []
+        if "DSWX" in prod_str:
+            target_layers.extend(["WTR", "BWTR", "CONF"])
+        if "DIST" in prod_str:
+            target_layers.extend(["VEG-ANOM-MAX", "VEG-DIST-STATUS", "VEG-DIST-DATE", "VEG-DIST-CONF"])
+        if "RTC" in prod_str:
+            target_layers.extend(["RTC-VV", "RTC-VH"])
+            
+        if not target_layers:
             logger.info(f"Downloading product '{product}' is not currently supported. Exiting...")
             return None
             
@@ -1032,18 +1096,19 @@ def generate_products(
             return
             
     elif product:
-        short_names = [product]
-        if "DSWX" in product:
+        short_names = product if isinstance(product, list) else [product]
+        prod_str = " ".join(short_names)
+        if "DSWX" in prod_str:
             layer_names = ["WTR", "BWTR"]
-            mode = "flood" # Inherit mode logic for downstream processing
-        elif "DIST" in product:
+            mode = "flood"
+        elif "DIST" in prod_str:
             layer_names = ["VEG-ANOM-MAX", "VEG-DIST-STATUS"]
             mode = "fire"
-        elif "RTC" in product:
+        elif "RTC" in prod_str:
             layer_names = ["RTC-VV", "RTC-VH"]
             mode = "rtc-rgb"
         else:
-            logger.info(f"Product '{product}' is not currently supported for mosaic/map generation. Exiting...")
+            logger.info(f"Product '{product}' is not currently supported. Exiting...")
             return
             
     # Filter to see if we have ANY data for the products required by this mode, if not, exit
