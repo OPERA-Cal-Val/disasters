@@ -10,7 +10,8 @@ import rasterio
 from rasterio.mask import mask
 from rasterio.windows import Window
 from pyproj import Transformer
-from shapely.geometry import box
+from shapely.geometry import box, shape
+from rasterio.features import shapes
 
 logger = logging.getLogger(__name__)
 
@@ -118,29 +119,41 @@ def compute_structure_impact(raster_path: Path, bbox_snwe: list, output_csv: Pat
     with rasterio.open(raster_path) as src:
         def is_flooded(geom):
             try:
-                # Compute water/no water pixels within the building footprint
-                out_image, _ = mask(src, [geom], crop=True, all_touched=False)
-
-                # out_image is a 3D array, analyze the first band
+                # Use all_touched=True to ensure we grab ANY water pixel touching the building
+                out_image, out_transform = mask(src, [geom], crop=True, all_touched=True)
                 flood_data = out_image[0]
                 
-                # Determinetotal pixels that belong to the building structure
-                structure_pixels = np.count_nonzero(flood_data != src.nodata)
-                if structure_pixels == 0:
+                # If no water (1) touches the building at all, skip
+                if not np.any(flood_data == 1):
                     return 0
                 
-                # Count how many of those pixels are classified as water (value=1)
-                water_pixels = np.count_nonzero(flood_data == 1)
-
-                # Calculate the percentage of the building footprint that is flooded
-                coverage = water_pixels / structure_pixels
-
-                # Consider the building flooded if at least 50% of its footprint is covered by water
+                # Isolate water pixels to convert to geometry
+                water_mask = (flood_data == 1).astype('uint8')
+                
+                # Convert the raster water pixels into exact geometric squares (polygons)
+                water_polys = []
+                for geom_dict, val in shapes(water_mask, transform=out_transform):
+                    if val == 1:
+                        water_polys.append(shape(geom_dict))
+                        
+                if not water_polys:
+                    return 0
+                    
+                # Merge the water squares into a single unified geometry
+                total_water_geom = gpd.GeoSeries(water_polys).unary_union
+                
+                # Calculate the true fractional area intersection!
+                intersection_area = geom.intersection(total_water_geom).area
+                building_area = geom.area
+                
+                coverage = intersection_area / building_area
+                
+                # Consider the building flooded if at least 50% of its TRUE area is covered
                 return 1 if coverage >= 0.5 else 0
-            except ValueError:
+            except Exception:
                 return 0
 
-        # Apply the intersection logic row by row
+        # Apply the true geometric intersection logic row by row
         gdf_proj['flood_max'] = gdf_proj.geometry.apply(is_flooded)
 
     # Filter to only buildings that touched water
