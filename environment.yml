@@ -1,10 +1,12 @@
-name: disasters
+name: disasters-impact-testing
 channels:
   - conda-forge
 dependencies:
   - python=3.12
   - gdal=3.12
   - libgdal=3.12
+  - h5py<3.16.0
+  - hdf5<2.0.0
   - numpy
   - asf_search
   - beautifulsoup4
