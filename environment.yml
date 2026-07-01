@@ -17,6 +17,7 @@ dependencies:
   - lxml
   - matplotlib
   - opera-utils=0.25.3
+  - osmnx
   - pandas
   - pip
   - pygmt

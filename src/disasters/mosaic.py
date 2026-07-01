@@ -764,7 +764,7 @@ def opera_rules(product: str = "OPERA_L3_DSWX-S1_V1", nodata: int = 255):
 
 def contains_unexpected_values(DA: list, valid_values: set) -> bool:
     """
-    Check if any DataArray contains non-valid values.
+    Check if any DataArray contains non-valid values, checking only the primary band.
 
     Args:
         DA (list): List of DataArrays.
@@ -774,9 +774,20 @@ def contains_unexpected_values(DA: list, valid_values: set) -> bool:
         bool: True if unexpected values are found, False otherwise.
     """
     for da in DA:
-        unique_vals = np.unique(da.values)
+        # Extract the first band for validation
+        if len(da.shape) >= 3:
+            vals_to_check = da.values[0]
+        else:
+            vals_to_check = da.values
+            
+        unique_vals = np.unique(vals_to_check)
+        
+        # Filter out NaNs if any exist, as they aren't in the priority dictionary
+        unique_vals = unique_vals[~np.isnan(unique_vals)]
+        
         if not set(unique_vals).issubset(valid_values):
             return True
+            
     return False
 
 
