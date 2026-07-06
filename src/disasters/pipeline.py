@@ -250,12 +250,22 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 else None
             )
 
+        # Determine if HLS source scenes should be included
+        needs_hls = False
+        if np_prod:
+            needs_hls = any("HLS" in p for p in np_prod)
+        elif config.mode in ["flood", "fire", "landslide"]:
+            needs_hls = True
+        elif not config.mode and not config.product:
+            needs_hls = True
+
         output_dir_np = next_pass.run_next_pass(
             bbox=next_pass_bbox,
             number_of_dates=config.number_of_dates,
             date=config.date,
             functionality=config.functionality,
             compute_cloudiness=config.compute_cloudiness,
+            include_hls=needs_hls,
             products=np_prod,
             satellites=config.satellites,
         )
@@ -437,6 +447,15 @@ def run_search_only(
             else None
         )
 
+    # Determine if HLS source scenes should be included
+    needs_hls = False
+    if np_prod:
+        needs_hls = any("HLS" in p for p in np_prod)
+    elif mode in ["flood", "fire", "landslide"]:
+        needs_hls = True
+    elif not mode and not product:
+        needs_hls = True
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
@@ -444,6 +463,7 @@ def run_search_only(
         date=date,
         functionality=functionality,
         compute_cloudiness=compute_cloudiness,
+        include_hls=needs_hls,
         products=np_prod,
         satellites=satellites,
     )
@@ -521,7 +541,7 @@ def run_download_only(
         date (str | None): Optional date string for filtering products.
         number_of_dates (int): Number of dates to retrieve if 'date' is specified.
         mode (str | None): If specified, filters downloads to only include relevant datasets/layers for this mode.
-        product (str | list[str] | None): If specified, filters downloads to only include this specific product or list of products.
+        product (str | list[str] | tuple | None): If specified, filters downloads to only include this specific product or list of products.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
     """
     import concurrent.futures
@@ -531,7 +551,7 @@ def run_download_only(
 
     # Pre-check for unsupported products before authenticating or downloading
     if product:
-        prod_str = " ".join(product) if isinstance(product, list) else product
+        prod_str = " ".join(product) if isinstance(product, (list, tuple)) else product
         if any(unsupported in prod_str for unsupported in ["CSLC", "DISP"]):
             logger.info(
                 f"Downloading product '{product}' is not currently supported. Exiting..."
@@ -563,6 +583,15 @@ def run_download_only(
             else None
         )
 
+    # Determine if HLS source scenes should be included
+    needs_hls = False
+    if np_prod:
+        needs_hls = any("HLS" in p for p in np_prod)
+    elif mode in ["flood", "fire", "landslide"]:
+        needs_hls = True
+    elif not mode and not product:
+        needs_hls = True
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
@@ -570,7 +599,8 @@ def run_download_only(
         date=date,
         functionality=functionality,
         compute_cloudiness=compute_cloudiness,
-        products=np_prod,
+        include_hls=needs_hls,
+        products=np_prod
     )
 
     output_dir_np = Path(output_dir_np)
@@ -626,7 +656,7 @@ def run_download_only(
 
     elif product:
         logger.info(f"Filtering downloads for '{product}' product...")
-        short_names = product if isinstance(product, list) else [product]
+        short_names = product if isinstance(product, (list, tuple)) else [product]
         prod_str = " ".join(short_names)
 
         target_layers = []
@@ -657,6 +687,18 @@ def run_download_only(
             "No mode or product specified. Downloading ALL available OPERA products and layers."
         )
         url_cols = [c for c in df_opera.columns if c.startswith("Download URL")]
+
+    # Append HLS columns to the download queue if they exist
+    if needs_hls:
+        hls_cols = [
+            "HLS Download URL (B04/Red)", 
+            "HLS Download URL (B03/Green)", 
+            "HLS Download URL (B02/Blue)",
+            "HLS Download URL (B8A/B05/NIR)"
+        ]
+        for col in hls_cols:
+            if col in df_opera.columns:
+                url_cols.append(col)
 
     if df_opera.empty or not url_cols:
         logger.warning(
@@ -1492,7 +1534,21 @@ def generate_products(
         else:
             logger.info(f"Product '{product}' is not currently supported. Exiting...")
             return
-
+    
+    # Map HLS columns to standard layer naming so they are automatically mosaicked
+    hls_mapping = {
+        "HLS Download URL (B04/Red)": "HLS-RED",
+        "HLS Download URL (B03/Green)": "HLS-GREEN",
+        "HLS Download URL (B02/Blue)": "HLS-BLUE",
+        "HLS Download URL (B8A/B05/NIR)": "HLS-NIR"
+    }
+    for old_col, new_layer in hls_mapping.items():
+        if old_col in df_opera.columns:
+            # Rename the column so the existing loop finds it using f"Download URL {layer}"
+            df_opera.rename(columns={old_col: f"Download URL {new_layer}"}, inplace=True)
+            if new_layer not in layer_names:
+                layer_names.append(new_layer)
+            
     # Filter to see if we have ANY data for the products required by this mode, if not, exit
     df_mode_data = df_opera[df_opera["Dataset"].isin(short_names)]
     if df_mode_data.empty:
@@ -2232,10 +2288,8 @@ def generate_products(
                         }
 
                         # --- Background Plotting ---
-                        logger.info(
-                            f"Submitting background plotting task for {pass_id}..."
-                        )
-                        if mode != "rtc-rgb":
+                        logger.info(f"Submitting background plotting task for {pass_id}...")
+                        if mode != "rtc-rgb" and not layer.startswith("HLS"):
                             future = ensure_executor().submit(
                                 run_plotting_task,
                                 maps_dir,
@@ -2273,7 +2327,7 @@ def generate_products(
                             )
 
                             # Submit Plotting Task for CONF
-                            if mode != "rtc-rgb":
+                            if mode != "rtc-rgb" and not layer.startswith("HLS"):
                                 future = ensure_executor().submit(
                                     run_plotting_task,
                                     maps_dir,
