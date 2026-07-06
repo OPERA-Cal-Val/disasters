@@ -617,9 +617,31 @@ def compile_and_load_data(
         return DS
 
 
-def mosaic_opera(
-    DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dict = {}
-) -> Tuple[xr.DataArray, Optional[dict], float]:
+def merge_first_valid(
+    old_data,
+    new_data,
+    old_nodata=None,
+    new_nodata=None,
+    index=None,
+    roff=None,
+    coff=None
+):
+    """
+    Element-wise merge method for continuous integer imagery.
+    """
+    # Fall back to HLS standard -9999 if nodata isn't explicitly passed by the merge engine
+    if old_nodata is None or hasattr(old_nodata, "shape") or isinstance(old_nodata, (np.ndarray, list)):
+        nodata = -9999
+    else:
+        nodata = old_nodata
+
+    valid_mask = new_data != nodata
+    update_mask = (old_data == nodata) & valid_mask
+    old_data[update_mask] = new_data[update_mask]
+    return old_data
+
+
+def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dict = {}) -> Tuple[xr.DataArray, Optional[dict], float]:
     """
     Mosaics a list of OPERA product granules into a single image (in memory).
 
@@ -677,9 +699,10 @@ def mosaic_opera(
 
     valid_values = set(priority.keys())
 
-    # Check if any DataArray contains non-valid values, if so fall back to defaul rasterio.merge method
+    # Check if any DataArray contains non-valid values, if so fall back to default rasterio.merge method
     if contains_unexpected_values(DA, valid_values):
-        method = "first"
+        # Continuous imagery/unexpected values (HLS)
+        method = merge_first_valid
     elif product.startswith("OPERA_L3_DIST") or product.startswith("OPERA_L2_RTC"):
         method = "first"
     else:
