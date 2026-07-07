@@ -869,11 +869,11 @@ def run_mosaic_only(
                     logger.info(f"Mosaicking {short_name} - {layer} for pass {pass_id}")
 
                     # Use GDAL direct-to-disk for memory-heavy RTC products
-                    if "RTC" in short_name:
-                        gdal.PushErrorHandler("CPLQuietErrorHandler")
-
-                        height, width = master_grid["shape"]
-                        transform = master_grid["transform"]
+                    if "RTC" in short_name or layer.startswith("HLS"):
+                        gdal.PushErrorHandler('CPLQuietErrorHandler')
+                        
+                        height, width = master_grid['shape']
+                        transform = master_grid['transform']
                         min_x = transform.c
                         max_y = transform.f
                         max_x = min_x + (transform.a * width)
@@ -894,21 +894,15 @@ def run_mosaic_only(
                         if not opened_datasets:
                             continue
 
+                        out_type = gdal.GDT_Int16 if layer.startswith("HLS") else gdal.GDT_Float32
+                        out_nodata = -9999 if layer.startswith("HLS") else np.nan
+
                         warp_options = gdal.WarpOptions(
-                            format="GTiff",
-                            outputBounds=output_bounds,
-                            width=width,
-                            height=height,
-                            dstSRS=master_grid["dst_crs"],
-                            resampleAlg="bilinear",
-                            dstNodata=np.nan,
-                            creationOptions=[
-                                "COMPRESS=DEFLATE",
-                                "NUM_THREADS=ALL_CPUS",
-                            ],
-                            warpOptions=["NUM_THREADS=ALL_CPUS"],
-                            warpMemoryLimit=4096,
-                            outputType=gdal.GDT_Float32,
+                            format='GTiff', outputBounds=output_bounds, width=width, height=height,
+                            dstSRS=master_grid['dst_crs'], resampleAlg='bilinear', dstNodata=out_nodata,
+                            creationOptions=["COMPRESS=DEFLATE", "NUM_THREADS=ALL_CPUS"],
+                            warpOptions=["NUM_THREADS=ALL_CPUS"], warpMemoryLimit=4096,
+                            outputType=out_type
                         )
 
                         gdal.Warp(str(tmp_path), opened_datasets, options=warp_options)
@@ -1662,27 +1656,26 @@ def generate_products(
 
                         layout_date = ""
 
-                        # Use GDAL direct-to-disk mosaicking for RTC products to conserve RAM
-                        if short_name == "OPERA_L2_RTC-S1_V1":
+                        # Use GDAL direct-to-disk mosaicking for heavy continuous products (RTC and HLS) to conserve RAM
+                        if short_name == "OPERA_L2_RTC-S1_V1" or layer.startswith("HLS"):
                             mosaic_name = f"{short_name}_{layer}_{pass_id}_mosaic.tif"
                             mosaic_path = data_dir / mosaic_name
                             tmp_path = data_dir / f"tmp_{mosaic_name}"
 
-                            # Skip if RTC mosaic already exists
+                            # Skip if mosaic already exists
                             if skip_existing and mosaic_path.exists():
                                 logger.info(
                                     f"Mosaic already exists, skipping: {mosaic_name}"
                                 )
                                 with rasterio.open(mosaic_path) as ds:
                                     mosaic_crs = ds.crs
-                                # Register it for differencing later!
                                 mosaic_index[short_name][layer][pass_id] = {
                                     "path": mosaic_path,
                                     "crs": mosaic_crs,
-                                    "flight_dir": flight_dir,
-                                }
-
-                                if mode != "rtc-rgb":
+                                    "flight_dir": flight_dir
+                                    }
+                                
+                                if mode != "rtc-rgb" and not layer.startswith("HLS"):
                                     future = ensure_executor().submit(
                                         run_plotting_task,
                                         maps_dir,
@@ -1703,11 +1696,9 @@ def generate_products(
                                     plotting_futures.append(future)
                                 continue
 
-                            logger.info(
-                                "Using GDAL direct-to-disk mosaicking for RTC to conserve RAM."
-                            )
-
-                            gdal.PushErrorHandler("CPLQuietErrorHandler")
+                            logger.info(f"Using GDAL direct-to-disk mosaicking for {layer} to conserve RAM and accelerate rendering.")
+                            
+                            gdal.PushErrorHandler('CPLQuietErrorHandler')
 
                             # Extract bounds from master_grid for exact pixel alignment
                             height, width = master_grid["shape"]
@@ -1721,7 +1712,9 @@ def generate_products(
                             # Open datasets to avoid GDALDatasetShadow errors
                             opened_datasets = []
                             for u in urls:
-                                ds = gdal.Open(u)
+                                # Stream remote HTTP links through GDAL's virtual file system
+                                gdal_url = f"/vsicurl/{u}" if u.startswith("http") and not u.startswith("/vsicurl/") else u
+                                ds = gdal.Open(gdal_url)
                                 if ds is None:
                                     logger.warning(
                                         f"GDAL failed to open URL (likely auth or missing file), skipping: {u}"
@@ -1737,22 +1730,27 @@ def generate_products(
                                 )
                                 continue
 
+                            # Define data type and nodata markers dynamically
+                            if layer.startswith("HLS"):
+                                out_type = gdal.GDT_Int16
+                                out_nodata = -9999
+                            else:
+                                out_type = gdal.GDT_Float32
+                                out_nodata = np.nan
+
                             # Define Memory-Capped GDAL Warp Options
                             warp_options = gdal.WarpOptions(
                                 format="GTiff",
                                 outputBounds=output_bounds,
                                 width=width,
                                 height=height,
-                                dstSRS=master_grid["dst_crs"],
-                                resampleAlg="bilinear",
-                                dstNodata=np.nan,
-                                creationOptions=[
-                                    "COMPRESS=DEFLATE",
-                                    "NUM_THREADS=ALL_CPUS",
-                                ],
+                                dstSRS=master_grid['dst_crs'],
+                                resampleAlg='bilinear',
+                                dstNodata=out_nodata,
+                                creationOptions=["COMPRESS=DEFLATE", "NUM_THREADS=ALL_CPUS"],
                                 warpOptions=["NUM_THREADS=ALL_CPUS"],
-                                warpMemoryLimit=4096,  # Cap RAM usage at 4GB
-                                outputType=gdal.GDT_Float32,
+                                warpMemoryLimit=4096,
+                                outputType=out_type
                             )
 
                             # Execute Warp straight to disk
@@ -1772,16 +1770,10 @@ def generate_products(
                             ):
                                 with rasterio.open(tmp_path, "r+") as ds:
                                     arr = ds.read(1)
-                                    if (
-                                        global_slope_mask is not None
-                                        and arr.shape == global_slope_mask.shape
-                                    ):
-                                        arr[global_slope_mask] = np.nan
-                                    if (
-                                        global_coastal_mask is not None
-                                        and arr.shape == global_coastal_mask.shape
-                                    ):
-                                        arr[~global_coastal_mask.values] = np.nan
+                                    if global_slope_mask is not None and arr.shape == global_slope_mask.shape:
+                                        arr[global_slope_mask] = out_nodata
+                                    if global_coastal_mask is not None and arr.shape == global_coastal_mask.shape:
+                                        arr[~global_coastal_mask.values] = out_nodata
                                     ds.write(arr, 1)
 
                             # Convert to COG
@@ -1795,8 +1787,8 @@ def generate_products(
                                 "flight_dir": flight_dir,
                             }
 
-                            # Submit Plotting Task (Skip individual layouts for rtc-rgb mode)
-                            if mode != "rtc-rgb":
+                            # Submit Plotting Task (Skip individual layouts for rtc-rgb mode and HLS optical bands)
+                            if mode != "rtc-rgb" and not layer.startswith("HLS"):
                                 future = ensure_executor().submit(
                                     run_plotting_task,
                                     maps_dir,
@@ -1816,7 +1808,7 @@ def generate_products(
                                 )
                                 plotting_futures.append(future)
 
-                            continue  # Skip the xarray processing loops entirely for RTC
+                            continue # Skip the xarray processing loops entirely for RTC and HLS
 
                         # For non-RTC products, we load the granules into xarray DataArrays for filtering and mosaicking
                         mosaic_name = f"{short_name}_{layer}_{pass_id}_mosaic.tif"
@@ -2523,7 +2515,13 @@ def generate_products(
             
             # Verify all 4 spectral components exist for this specific pass
             if green_path.exists() and blue_path.exists() and nir_path.exists():
-                combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
+                name_parts = red_name.split("_HLS-RED_")
+                if len(name_parts) == 2:
+                    combined_name = f"HLS-4BAND_{name_parts[1]}"
+                else:
+                    # Fallback (in case the naming convention ever changes)
+                    combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
+                
                 combined_path = data_dir / combined_name
                 
                 if skip_existing and combined_path.exists():
