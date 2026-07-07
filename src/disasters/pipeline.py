@@ -2272,6 +2272,7 @@ def generate_products(
                             driver="GTiff",
                             colormap=colormap,
                             nodata=nodata,
+                            dtype=mosaic.dtype
                         )
 
                         # Translate the standard GTiff into a COG in-place
@@ -2317,6 +2318,7 @@ def generate_products(
                                 driver="GTiff",
                                 colormap=conf_colormap,
                                 nodata=255,
+                                dtype=conf_mosaic.dtype
                             )
 
                             # Translate the standard GTiff into a COG in-place
