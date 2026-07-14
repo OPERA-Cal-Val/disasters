@@ -980,9 +980,7 @@ def run_mosaic_only(
                         continue
 
                     # Apply the OPERA pixel-priority rules (Water beats Cloud, etc.)
-                    mosaic, colormap, nodata = mosaic_opera(
-                        all_warped_ds, product=short_name, merge_args={}
-                    )
+                    mosaic, colormap, nodata = mosaic_opera(all_warped_ds, product=short_name, layer=layer, merge_args={})
 
                     # Split the synchronized CONF layer back out if we stacked it
                     conf_mosaic = None
@@ -2110,9 +2108,7 @@ def generate_products(
                             except Exception:
                                 colormap = None
                         # Mosaic the datasets using the single global master grid setup
-                        mosaic, _, nodata = mosaic_opera(
-                            all_warped_ds, product=short_name, merge_args={}
-                        )
+                        mosaic, _, nodata = mosaic_opera(all_warped_ds, product=short_name, layer=layer, merge_args={})
 
                         # Check if we have a synchronized CONF layer to split out
                         conf_mosaic = None

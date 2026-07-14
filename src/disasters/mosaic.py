@@ -641,7 +641,7 @@ def merge_first_valid(
     return old_data
 
 
-def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dict = {}) -> Tuple[xr.DataArray, Optional[dict], float]:
+def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", layer: str = None, merge_args: dict = {}) -> Tuple[xr.DataArray, Optional[dict], float]:
     """
     Mosaics a list of OPERA product granules into a single image (in memory).
 
@@ -650,6 +650,7 @@ def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dic
         product (str): OPERA product short name. Used to define pixel prioritization scheme in regions of OPERA granule overlap.
             Options include: "OPERA_L3_DSWX-HLS_V1","OPERA_L3_DSWX-S1_V1", "OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ANN-HLS_V1", "OPERA_L2_RTC-S1_V1"
             Default: "OPERA_L3_DSWX-S1_V1"
+        layer (str, optional): The specific layer name to mosaic. If None, defaults to the first layer in the DataArray.
         merge_args (dict, optional): A dictionary of arguments to pass to the rioxarray.merge_arrays function. Defaults to {}.
 
     Returns:
@@ -700,7 +701,9 @@ def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dic
     valid_values = set(priority.keys())
 
     # Check if any DataArray contains non-valid values, if so fall back to default rasterio.merge method
-    if contains_unexpected_values(DA, valid_values):
+    if layer == "VEG-ANOM-MAX":
+        method = "first"
+    elif contains_unexpected_values(DA, valid_values):
         # Continuous imagery/unexpected values (HLS)
         method = merge_first_valid
     elif product.startswith("OPERA_L3_DIST") or product.startswith("OPERA_L2_RTC"):
