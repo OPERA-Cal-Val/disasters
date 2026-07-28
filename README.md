@@ -44,6 +44,18 @@ The provided `environment.yml` file sets up a fully functional environment, and 
 
 `environment.yml` is the source of truth for the working environment (including conda-native/system packages like GDAL and notebook/tooling dependencies). `pyproject.toml` pulls package runtime dependencies dynamically from `requirements.txt` for packaging/install metadata.
 
+3. (Optional) Install pre-commit hooks for automatic code quality checks:
+
+```bash
+pre-commit install
+```
+
+This sets up git hooks that automatically run linters (black, isort, flake8) before each commit. To manually run checks on all files:
+
+```bash
+pre-commit run --all-files
+```
+
 ### Commands
 
 The CLI exposes three commands:
@@ -220,7 +232,7 @@ The `-m / --mode` argument determines which NASA OPERA products and data layers 
 | `fire`       | `OPERA_L3_DIST-ALERT-HLS_V1`, `OPERA_L3_DIST-ALERT-S1_V1` | `VEG-ANOM-MAX`, `VEG-DIST-STATUS` | Identifies vegetation disturbance and anomalies from wildfire events        |
 | `landslide`       | `OPERA_L3_DIST-ALERT-HLS_V1`, `OPERA_L2_RTC-S1_V1` | `VEG-ANOM-MAX`, `VEG-DIST-STATUS`, `RTC-VV`, `RTC-VH` | Identifies vegetation disturbance and anomalies from landslides events        |
 | `rtc-rgb`       | `OPERA_L2_RTC-S1_V1` | `RTC-VV`, `RTC-VH` | Generates 8-bit RGB composite visualizations from Sentinel-1 RTC backscatter data
-| `earthquake` | *(coming soon)* | *(coming soon)* | Placeholder CLI mode; the current implementation logs a message and exits | 
+| `earthquake` | *(coming soon)* | *(coming soon)* | Placeholder CLI mode; the current implementation logs a message and exits |
 
 ### Output
 For the `run` command, outputs are written under `<output_dir>/<mode>/` in subdirectories such as `data/`, `maps/`, and `layouts/`.

@@ -11,11 +11,11 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numpy as np
 import pygmt
+import rasterio
 import rioxarray
 from osgeo import gdal
 from pygmt.params import Box
 from pyproj import Geod
-import rasterio
 
 from .io import cleanup_temp_file
 
@@ -94,7 +94,7 @@ def make_map(
     zoom_bbox: list = None,
     is_difference: bool = False,
     utm_suffix: str = "",
-    skip_existing: bool = False
+    skip_existing: bool = False,
 ) -> Path:
     """
     Create a map using PyGMT from the provided mosaic path.
@@ -117,11 +117,12 @@ def make_map(
     Raises:
         ImportError: If required libraries are not installed.
     """
+
     # Helper to prettify pass IDs (YYYYMMDDtHHMM -> YYYY-MM-DD HH:MM)
     def format_pass_id(pid):
         # If it matches YYYYMMDDtHHMM
         if re.match(r"\d{8}t\d{4}", pid):
-             return f"{pid[:4]}-{pid[4:6]}-{pid[6:8]} {pid[9:11]}:{pid[11:13]}"
+            return f"{pid[:4]}-{pid[4:6]}-{pid[6:8]} {pid[9:11]}:{pid[11:13]}"
         # If it matches YYYY-MM-DD
         if re.match(r"\d{4}-\d{2}-\d{2}", pid):
             return pid
@@ -185,7 +186,7 @@ def make_map(
             nodata_value = grd.rio.nodata
         except AttributeError:
             nodata_value = 255
-            
+
         if nodata_value is not None:
             # Mask out nodata
             grd = grd.where(grd != nodata_value)
@@ -216,12 +217,12 @@ def make_map(
             water="lightblue",
         )
 
-        palette_dir = files('disasters.assets.palettes')
+        palette_dir = files("disasters.assets.palettes")
 
         # 'landslide' mode (RTC)
         if is_difference:
             is_log_diff = "_log-diff" in str(mosaic_path)
-            
+
             # --- CASE A: CONTINUOUS SCALE (RTC / Landslide) ---
             if is_log_diff:
                 data_values = grd.values[~np.isnan(grd.values)]
@@ -233,22 +234,32 @@ def make_map(
 
                 p2, p98 = np.percentile(data_values, [2, 98])
                 symmetric_limit = max(abs(p2), abs(p98))
-                if symmetric_limit == 0: symmetric_limit = 1 
-                
+                if symmetric_limit == 0:
+                    symmetric_limit = 1
+
                 p_min = -symmetric_limit
                 p_max = symmetric_limit
                 inc = (p_max - p_min) / 1000.0
 
-                cpt_name = f"difference_cpt_{unique_id}" # Unique Name
+                cpt_name = f"difference_cpt_{unique_id}"  # Unique Name
                 pygmt.makecpt(
-                    cmap="vik", series=[p_min, p_max, inc], output=cpt_name, continuous=True
+                    cmap="vik",
+                    series=[p_min, p_max, inc],
+                    output=cpt_name,
+                    continuous=True,
                 )
-                
+
                 fig.grdimage(
-                    grid=grd, region=region_padded, projection=projection,
-                    cmap=cpt_name, frame=["WSne", "xaf", "yaf"], nan_transparent=True
+                    grid=grd,
+                    region=region_padded,
+                    projection=projection,
+                    cmap=cpt_name,
+                    frame=["WSne", "xaf", "yaf"],
+                    nan_transparent=True,
                 )
-                fig.colorbar(cmap=cpt_name, frame=["x+lNormalized backscatter difference (dB)"])
+                fig.colorbar(
+                    cmap=cpt_name, frame=["x+lNormalized backscatter difference (dB)"]
+                )
 
             # 'flood' mode (DSWx)
             else:
@@ -259,7 +270,7 @@ def make_map(
                 # --- Sub-Case B1: Binary Positive Change (Max value is 1) ---
                 if max_val <= 1:
                     cpt_path = maps_dir / f"binary_gain_{unique_id}.cpt"
-                    
+
                     # Create Simple Blue/White CPT
                     with open(cpt_path, "w") as f:
                         # 0 -> White (Fully Transparent 100)
@@ -267,41 +278,55 @@ def make_map(
                         # 1 -> Blue (Opaque 0)
                         f.write("1 0/0/200@0 2 0/0/200@0\n")
                         # Background/NaN
-                        f.write("B 255/255/255@100\nF 255/255/255@100\nN 255/255/255@100\n")
+                        f.write(
+                            "B 255/255/255@100\nF 255/255/255@100\nN 255/255/255@100\n"
+                        )
 
                     fig.grdimage(
-                        grid=grd, region=region_padded, projection=projection,
-                        cmap=str(cpt_path), frame=["WSne", "xaf", "yaf"], nan_transparent=True
+                        grid=grd,
+                        region=region_padded,
+                        projection=projection,
+                        cmap=str(cpt_path),
+                        frame=["WSne", "xaf", "yaf"],
+                        nan_transparent=True,
                     )
 
                     # Simple Legend (Placed Inside Top Left to prevent layout squish)
                     legend_path = maps_dir / f"binary_legend_{unique_id}.txt"
                     with open(legend_path, "w") as f:
                         f.write("H 10p,Helvetica-Bold Water Change\n")
-                        f.write("D 0.2c 1p\n") 
+                        f.write("D 0.2c 1p\n")
                         f.write("S 0.3c s 0.4c 0/0/200 0.25p 0.8c Water Gain\n")
-                    
-                    fig.legend(spec=str(legend_path), position="jTL+o0.2c/0.2c+w4.5c", box="+gwhite+p1p")
+
+                    fig.legend(
+                        spec=str(legend_path),
+                        position="jTL+o0.2c/0.2c+w4.5c",
+                        box="+gwhite+p1p",
+                    )
 
                 # --- Sub-Case B2: Full Categorical (Max value > 1) ---
                 else:
                     cpt_path = maps_dir / f"categorical_diff_{unique_id}.cpt"
-                    
+
                     # Define color map for full 0-15 classes
                     color_map = {
                         # No Change (Black / Transparent for 0)
-                        0:  (255, 255, 255, 0),    5:  (0, 0, 0, 255),
-                        10: (0, 0, 0, 255),        15: (0, 0, 0, 255),
-                        
+                        0: (255, 255, 255, 0),
+                        5: (0, 0, 0, 255),
+                        10: (0, 0, 0, 255),
+                        15: (0, 0, 0, 255),
                         # Losses (Red/Orange)
-                        1:  (200, 0, 0, 255),      2:  (255, 127, 80, 255),
-                        3:  (255, 165, 0, 255),    9:  (255, 200, 100, 255),
+                        1: (200, 0, 0, 255),
+                        2: (255, 127, 80, 255),
+                        3: (255, 165, 0, 255),
+                        9: (255, 200, 100, 255),
                         13: (255, 200, 100, 255),
-
                         # Gains (Blues)
-                        4:  (0, 0, 200, 255),      8:  (100, 149, 237, 255),
-                        12: (60, 179, 113, 255),   6:  (30, 144, 255, 255),
-                        7:  (30, 144, 255, 255)
+                        4: (0, 0, 200, 255),
+                        8: (100, 149, 237, 255),
+                        12: (60, 179, 113, 255),
+                        6: (30, 144, 255, 255),
+                        7: (30, 144, 255, 255),
                     }
 
                     # Build valid CPT
@@ -310,14 +335,22 @@ def make_map(
                             if i in color_map:
                                 r, g, b, a = color_map[i]
                                 transparency = int(100 * (1 - (a / 255.0)))
-                                f.write(f"{i} {r}/{g}/{b}@{transparency} {i+1} {r}/{g}/{b}@{transparency}\n")
+                                f.write(
+                                    f"{i} {r}/{g}/{b}@{transparency} {i+1} {r}/{g}/{b}@{transparency}\n"
+                                )
                             else:
                                 f.write(f"{i} 255/255/255@100 {i+1} 255/255/255@100\n")
-                        f.write("B 255/255/255@100\nF 255/255/255@100\nN 255/255/255@100\n")
-                    
+                        f.write(
+                            "B 255/255/255@100\nF 255/255/255@100\nN 255/255/255@100\n"
+                        )
+
                     fig.grdimage(
-                        grid=grd, region=region_padded, projection=projection,
-                        cmap=str(cpt_path), frame=["WSne", "xaf", "yaf"], nan_transparent=True
+                        grid=grd,
+                        region=region_padded,
+                        projection=projection,
+                        cmap=str(cpt_path),
+                        frame=["WSne", "xaf", "yaf"],
+                        nan_transparent=True,
                     )
 
                     # Full Legend (Placed Inside Top Left to prevent layout squish)
@@ -325,18 +358,30 @@ def make_map(
                     with open(legend_path, "w") as f:
                         f.write("H 10p,Helvetica-Bold Water Change Classes\n")
                         f.write("D 0.2c 1p\n")
-                        f.write("S 0.3c s 0.4c 0/0/200 0.25p 0.8c Water Gain (Inundation)\n")
-                        f.write("S 0.3c s 0.4c 30/144/255 0.25p 0.8c Water Gain (Partial)\n")
-                        f.write("S 0.3c s 0.4c 200/0/0 0.25p 0.8c Water Loss (Drying)\n")
-                        f.write("S 0.3c s 0.4c 255/127/80 0.25p 0.8c Water Loss (Partial)\n")
+                        f.write(
+                            "S 0.3c s 0.4c 0/0/200 0.25p 0.8c Water Gain (Inundation)\n"
+                        )
+                        f.write(
+                            "S 0.3c s 0.4c 30/144/255 0.25p 0.8c Water Gain (Partial)\n"
+                        )
+                        f.write(
+                            "S 0.3c s 0.4c 200/0/0 0.25p 0.8c Water Loss (Drying)\n"
+                        )
+                        f.write(
+                            "S 0.3c s 0.4c 255/127/80 0.25p 0.8c Water Loss (Partial)\n"
+                        )
                         f.write("S 0.3c s 0.4c 0/0/0 0.25p 0.8c Stable Water\n")
-                        
-                    fig.legend(spec=str(legend_path), position="jTL+o0.2c/0.2c+w6.5c", box="+gwhite+p1p")
+
+                    fig.legend(
+                        spec=str(legend_path),
+                        position="jTL+o0.2c/0.2c+w6.5c",
+                        box="+gwhite+p1p",
+                    )
 
         # --- MAXIMUM FLOOD EXTENT LAYER ---
         elif layer == "MAX-EXTENT":
             cpt_path = maps_dir / f"max_extent_{unique_id}.cpt"
-            
+
             with open(cpt_path, "w") as f:
                 f.write("0 255/255/255@100 1 255/255/255@100\n")
                 f.write("1 0/0/200@0 2 0/0/200@0\n")
@@ -349,7 +394,7 @@ def make_map(
                 cmap=str(cpt_path),
                 frame=["WSne", "xaf", "yaf"],
                 nan_transparent=True,
-                interpolation="n"
+                interpolation="n",
             )
 
             legend_path = maps_dir / f"max_extent_legend_{unique_id}.txt"
@@ -357,12 +402,16 @@ def make_map(
                 f.write("H 10p,Helvetica-Bold Maximum Flood Extent\n")
                 f.write("D 0.2c 1p\n")
                 f.write("S 0.3c s 0.4c 0/0/200 0.25p 0.8c Flooded Area\n")
-            
-            fig.legend(spec=str(legend_path), position="jTL+o0.2c/0.2c+w4.5c", box="+gwhite+p1p")
+
+            fig.legend(
+                spec=str(legend_path),
+                position="jTL+o0.2c/0.2c+w4.5c",
+                box="+gwhite+p1p",
+            )
 
         # Add grid image (based on product/layer)
         elif not is_difference and layer in ["WTR", "BWTR", "CONF", "VEG-DIST-STATUS"]:
-            
+
             # Extract embedded colormap dynamically from the GeoTIFF
             cmap_dict = None
             with rasterio.open(mosaic_path) as src:
@@ -381,9 +430,13 @@ def make_map(
                             transparency = int(100 * (1 - (a / 255.0)))
                             # Force Nodatas or Alpha-0s to be fully transparent
                             if val == 255 or a == 0:
-                                f.write(f"{val} {r}/{g}/{b}@100 {val+1} {r}/{g}/{b}@100\n")
+                                f.write(
+                                    f"{val} {r}/{g}/{b}@100 {val+1} {r}/{g}/{b}@100\n"
+                                )
                             else:
-                                f.write(f"{val} {r}/{g}/{b}@{transparency} {val+1} {r}/{g}/{b}@{transparency}\n")
+                                f.write(
+                                    f"{val} {r}/{g}/{b}@{transparency} {val+1} {r}/{g}/{b}@{transparency}\n"
+                                )
                         else:
                             f.write(f"{val} 0/0/0@100 {val+1} 0/0/0@100\n")
                 else:
@@ -399,7 +452,7 @@ def make_map(
                 cmap=color_palette,
                 frame=["WSne", "xaf", "yaf"],
                 nan_transparent=True,
-                interpolation="n"
+                interpolation="n",
             )
 
             # Helper function to extract exact RGB string for the legend
@@ -410,42 +463,80 @@ def make_map(
 
             # Build the corresponding Custom Legend in Upper Right (jTR)
             legend_path = maps_dir / f"custom_legend_{unique_id}.txt"
-            
+
             if layer == "WTR":
                 with open(legend_path, "w") as f:
                     f.write(f"H 10p,Helvetica-Bold {short_name.split('_')[2]} Water\n")
                     f.write("D 0.2c 1p\n")
                     if "HLS" in short_name:
-                        f.write(f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: Open Water\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Partial Surface Water\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(252)} 0.25p 0.8c 252: Snow/Ice Mask\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(253)} 0.25p 0.8c 253: Cloud/Cloud Shadow\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(254)} 0.25p 0.8c 254: Ocean Masked\n")
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: Open Water\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Partial Surface Water\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(252)} 0.25p 0.8c 252: Snow/Ice Mask\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(253)} 0.25p 0.8c 253: Cloud/Cloud Shadow\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(254)} 0.25p 0.8c 254: Ocean Masked\n"
+                        )
                         f.write(f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: Not Water\n")
-                    else: # S1
-                        f.write(f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: Open Water\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(3)} 0.25p 0.8c 3: Inundated Vegetation\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(250)} 0.25p 0.8c 250: HAND Masked\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(251)} 0.25p 0.8c 251: Layover/Shadow Masked\n")
+                    else:  # S1
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: Open Water\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(3)} 0.25p 0.8c 3: Inundated Vegetation\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(250)} 0.25p 0.8c 250: HAND Masked\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(251)} 0.25p 0.8c 251: Layover/Shadow Masked\n"
+                        )
                         f.write(f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: Not Water\n")
-                fig.legend(spec=str(legend_path), position="jTL+o0.2c/0.2c+w6.0c", box="+gwhite+p1p")
+                fig.legend(
+                    spec=str(legend_path),
+                    position="jTL+o0.2c/0.2c+w6.0c",
+                    box="+gwhite+p1p",
+                )
 
             elif layer == "BWTR":
                 with open(legend_path, "w") as f:
-                    f.write(f"H 10p,Helvetica-Bold {short_name.split('_')[2]} Binary Water\n")
+                    f.write(
+                        f"H 10p,Helvetica-Bold {short_name.split('_')[2]} Binary Water\n"
+                    )
                     f.write("D 0.2c 1p\n")
                     if "HLS" in short_name:
                         f.write(f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: Water\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(252)} 0.25p 0.8c 252: Snow/Ice Mask\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(253)} 0.25p 0.8c 253: Cloud/Cloud Shadow\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(254)} 0.25p 0.8c 254: Ocean Masked\n")
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(252)} 0.25p 0.8c 252: Snow/Ice Mask\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(253)} 0.25p 0.8c 253: Cloud/Cloud Shadow\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(254)} 0.25p 0.8c 254: Ocean Masked\n"
+                        )
                         f.write(f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: Not Water\n")
-                    else: # S1
+                    else:  # S1
                         f.write(f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: Water\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(250)} 0.25p 0.8c 250: HAND Masked\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(251)} 0.25p 0.8c 251: Layover/Shadow Masked\n")
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(250)} 0.25p 0.8c 250: HAND Masked\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(251)} 0.25p 0.8c 251: Layover/Shadow Masked\n"
+                        )
                         f.write(f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: Not Water\n")
-                fig.legend(spec=str(legend_path), position="jTL+o0.2c/0.2c+w6.0c", box="+gwhite+p1p")
+                fig.legend(
+                    spec=str(legend_path),
+                    position="jTL+o0.2c/0.2c+w6.0c",
+                    box="+gwhite+p1p",
+                )
 
             elif layer == "CONF":
                 with open(legend_path, "w") as f:
@@ -453,49 +544,113 @@ def make_map(
                     f.write("D 0.2c 1p\n")
                     if "HLS" in short_name:
                         f.write(f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: Not Water\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: High Confidence\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Moderate Confidence\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(3)} 0.25p 0.8c 3: Partial (Conservative)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(4)} 0.25p 0.8c 4: Partial (Aggressive)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(10)} 0.25p 0.8c 10: Not Water (Cloud)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(11)} 0.25p 0.8c 11: High Conf (Cloud)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(12)} 0.25p 0.8c 12: Mod Conf (Cloud)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(13)} 0.25p 0.8c 13: Partial Cons (Cloud)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(14)} 0.25p 0.8c 14: Partial Agg (Cloud)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(20)} 0.25p 0.8c 20-24: Snow/Ice\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(254)} 0.25p 0.8c 254: Ocean Mask\n")
-                    else: # S1
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: High Confidence\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Moderate Confidence\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(3)} 0.25p 0.8c 3: Partial (Conservative)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(4)} 0.25p 0.8c 4: Partial (Aggressive)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(10)} 0.25p 0.8c 10: Not Water (Cloud)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(11)} 0.25p 0.8c 11: High Conf (Cloud)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(12)} 0.25p 0.8c 12: Mod Conf (Cloud)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(13)} 0.25p 0.8c 13: Partial Cons (Cloud)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(14)} 0.25p 0.8c 14: Partial Agg (Cloud)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(20)} 0.25p 0.8c 20-24: Snow/Ice\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(254)} 0.25p 0.8c 254: Ocean Mask\n"
+                        )
+                    else:  # S1
                         f.write(f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: Not Water\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: High Confidence\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Moderate Confidence\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(5)} 0.25p 0.8c 5: Inundated Vegetation\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(6)} 0.25p 0.8c 6, 7: Low Backscatter\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(30)} 0.25p 0.8c 30: Not Water (Wetland)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(31)} 0.25p 0.8c 31: High Conf (Wetland)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(32)} 0.25p 0.8c 32: Mod Conf (Wetland)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(35)} 0.25p 0.8c 35: Inundated Veg (Wetland)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(36)} 0.25p 0.8c 36, 37: Low Backscr (Wetland)\n")
-                        f.write(f"S 0.3c s 0.4c {get_rgb(250)} 0.25p 0.8c 250, 251: Topo/Layover\n")
-                fig.legend(spec=str(legend_path), position="jTL+o0.2c/0.2c+w6.5c", box="+gwhite+p1p")
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: High Confidence\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Moderate Confidence\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(5)} 0.25p 0.8c 5: Inundated Vegetation\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(6)} 0.25p 0.8c 6, 7: Low Backscatter\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(30)} 0.25p 0.8c 30: Not Water (Wetland)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(31)} 0.25p 0.8c 31: High Conf (Wetland)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(32)} 0.25p 0.8c 32: Mod Conf (Wetland)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(35)} 0.25p 0.8c 35: Inundated Veg (Wetland)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(36)} 0.25p 0.8c 36, 37: Low Backscr (Wetland)\n"
+                        )
+                        f.write(
+                            f"S 0.3c s 0.4c {get_rgb(250)} 0.25p 0.8c 250, 251: Topo/Layover\n"
+                        )
+                fig.legend(
+                    spec=str(legend_path),
+                    position="jTL+o0.2c/0.2c+w6.5c",
+                    box="+gwhite+p1p",
+                )
 
             elif layer == "VEG-DIST-STATUS":
                 with open(legend_path, "w") as f:
                     f.write("H 10p,Helvetica-Bold Vegetation Disturbance Status\n")
                     f.write("D 0.2c 1p\n")
-                    f.write(f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: No disturbance\n")
+                    f.write(
+                        f"S 0.3c s 0.4c {get_rgb(0)} 0.25p 0.8c 0: No disturbance\n"
+                    )
                     f.write(f"S 0.3c s 0.4c {get_rgb(1)} 0.25p 0.8c 1: First <50%\n")
-                    f.write(f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Provisional <50%\n")
-                    f.write(f"S 0.3c s 0.4c {get_rgb(3)} 0.25p 0.8c 3: Confirmed <50%\n")
+                    f.write(
+                        f"S 0.3c s 0.4c {get_rgb(2)} 0.25p 0.8c 2: Provisional <50%\n"
+                    )
+                    f.write(
+                        f"S 0.3c s 0.4c {get_rgb(3)} 0.25p 0.8c 3: Confirmed <50%\n"
+                    )
                     f.write(f"S 0.3c s 0.4c {get_rgb(4)} 0.25p 0.8c 4: First >=50%\n")
-                    f.write(f"S 0.3c s 0.4c {get_rgb(5)} 0.25p 0.8c 5: Provisional >=50%\n")
-                    f.write(f"S 0.3c s 0.4c {get_rgb(6)} 0.25p 0.8c 6: Confirmed >=50%\n")
-                    f.write(f"S 0.3c s 0.4c {get_rgb(7)} 0.25p 0.8c 7: Confirmed <50%, finished\n")
-                    f.write(f"S 0.3c s 0.4c {get_rgb(8)} 0.25p 0.8c 8: Confirmed >=50%, finished\n")
-                fig.legend(spec=str(legend_path), position="jTL+o0.2c/0.2c+w6.5c", box="+gwhite+p1p")
+                    f.write(
+                        f"S 0.3c s 0.4c {get_rgb(5)} 0.25p 0.8c 5: Provisional >=50%\n"
+                    )
+                    f.write(
+                        f"S 0.3c s 0.4c {get_rgb(6)} 0.25p 0.8c 6: Confirmed >=50%\n"
+                    )
+                    f.write(
+                        f"S 0.3c s 0.4c {get_rgb(7)} 0.25p 0.8c 7: Confirmed <50%, finished\n"
+                    )
+                    f.write(
+                        f"S 0.3c s 0.4c {get_rgb(8)} 0.25p 0.8c 8: Confirmed >=50%, finished\n"
+                    )
+                fig.legend(
+                    spec=str(legend_path),
+                    position="jTL+o0.2c/0.2c+w6.5c",
+                    box="+gwhite+p1p",
+                )
 
         elif layer == "VEG-ANOM-MAX":
             color_palette = str(palette_dir / "VEG-ANOM-MAX.cpt")
-            
+
             fig.grdimage(
                 grid=grd,
                 region=region_padded,
@@ -644,14 +799,19 @@ def make_map(
                 )
 
                 # Re-plot the data for the inset map
-                if not is_difference and layer in ["WTR", "BWTR", "CONF", "VEG-DIST-STATUS"]:
+                if not is_difference and layer in [
+                    "WTR",
+                    "BWTR",
+                    "CONF",
+                    "VEG-DIST-STATUS",
+                ]:
                     fig.grdimage(
                         grid=grd,
                         region=zoom_region,
                         projection="M5c",
                         cmap=color_palette,
                         nan_transparent=True,
-                        interpolation="n"
+                        interpolation="n",
                     )
                 elif layer == "MAX-EXTENT":
                     fig.grdimage(
@@ -660,7 +820,7 @@ def make_map(
                         projection="M5c",
                         cmap=str(cpt_path),
                         nan_transparent=True,
-                        interpolation="n"
+                        interpolation="n",
                     )
                 elif not is_difference and layer == "VEG-ANOM-MAX":
                     fig.grdimage(
@@ -685,7 +845,7 @@ def make_map(
                         projection="M5c",
                         cmap=str(cpt_path),
                         nan_transparent=True,
-                        interpolation="n"
+                        interpolation="n",
                     )
                 elif is_difference:
                     fig.grdimage(
@@ -693,7 +853,7 @@ def make_map(
                         region=zoom_region,
                         projection="M5c",
                         cmap=cpt_name,
-                        nan_transparent=True
+                        nan_transparent=True,
                     )
 
                 # Add scale bar to the inset map. Use Bottom-Left (jBL) inside the inset frame.
@@ -738,12 +898,12 @@ def make_map(
             maps_dir / f"max_extent_{unique_id}.cpt",
             maps_dir / f"max_extent_legend_{unique_id}.txt",
             f"difference_cpt_{unique_id}",
-            f"rtc_grayscale_{unique_id}"
+            f"rtc_grayscale_{unique_id}",
         ]:
             try:
                 if os.path.exists(tmp_file):
                     os.remove(tmp_file)
-            except:
+            except Exception:
                 pass
 
         return map_name
@@ -764,7 +924,7 @@ def make_layout(
     layout_title: str,
     reclassify_snow_ice: bool = False,
     utm_suffix: str = "",
-    skip_existing: bool = False
+    skip_existing: bool = False,
 ) -> None:
     """
     Create a layout using matplotlib for the provided map.
@@ -790,18 +950,18 @@ def make_layout(
     # Helper to prettify dates
     def format_display_date(pid):
         # Handle difference format: "YYYYMMDDtHHMM, YYYYMMDDtHHMM"
-        if ',' in pid:
-             parts = pid.split(',')
-             return f"{format_display_date(parts[0].strip())}, {format_display_date(parts[1].strip())}"
-        
+        if "," in pid:
+            parts = pid.split(",")
+            return f"{format_display_date(parts[0].strip())}, {format_display_date(parts[1].strip())}"
+
         # Regex to capture optional trailing letter (A/D)
         match = re.match(r"(\d{8}t\d{4})([A-Z]?)", pid)
         if match:
-             dt_part = match.group(1)
-             dir_part = match.group(2)
-             formatted = f"{dt_part[:4]}-{dt_part[4:6]}-{dt_part[6:8]} {dt_part[9:11]}:{dt_part[11:13]}"
-             return f"{formatted} ({dir_part})" if dir_part else formatted
-             
+            dt_part = match.group(1)
+            dir_part = match.group(2)
+            formatted = f"{dt_part[:4]}-{dt_part[4:6]}-{dt_part[6:8]} {dt_part[9:11]}:{dt_part[11:13]}"
+            return f"{formatted} ({dir_part})" if dir_part else formatted
+
         return pid
 
     # Create blank figure
@@ -817,7 +977,7 @@ def make_layout(
     ax.imshow(map_img, extent=[0, 60, 0, 100])  # Main map on left 60% of layout
 
     # Add OPERA/ARIA logos
-    logo_dir = files('disasters.assets.logos')
+    logo_dir = files("disasters.assets.logos")
     logo_opera = mpimg.imread(logo_dir / "OPERA_logo.png")
     logo_new = mpimg.imread(logo_dir / "ARIA_logo.png")
 
@@ -846,35 +1006,39 @@ def make_layout(
             f"A pixel is marked as flooded if water was detected in any valid observation during this period. "
             f"Derived from {short_name} data."
         )
-        data_source = "Copernicus Harmonized Landsat and Sentinel-2" if "HLS" in short_name else "Copernicus Sentinel-1"
+        data_source = (
+            "Copernicus Harmonized Landsat and Sentinel-2"
+            if "HLS" in short_name
+            else "Copernicus Sentinel-1"
+        )
 
     elif short_name == "OPERA_L3_DSWX-S1_V1" and layer != "CONF":
         subtitle = "OPERA Dynamic Surface Water eXtent from Sentinel-1 (DSWx-S1)"
         map_information = (
-            f"The ARIA/OPERA water extent map is derived from an OPERA DSWx-S1 mosaicked "
-            f"product from Copernicus Sentinel-1 data."
-            f"This map depicts regions of full surface water and inundated surface water. "
+            "The ARIA/OPERA water extent map is derived from an OPERA DSWx-S1 mosaicked "
+            "product from Copernicus Sentinel-1 data."
+            "This map depicts regions of full surface water and inundated surface water. "
         )
         data_source = "Copernicus Sentinel-1"
 
     elif short_name == "OPERA_L3_DSWX-HLS_V1" and layer != "CONF":
         subtitle = "OPERA Dynamic Surface Water eXtent from HLS (DSWx-HLS)"
-        if reclassify_snow_ice == True:
+        if reclassify_snow_ice:
             map_information = textwrap.dedent(
-                f"""\
-                The ARIA/OPERA water extent map is derived from an OPERA DSWx-HLS mosaicked 
+                """\
+                The ARIA/OPERA water extent map is derived from an OPERA DSWx-HLS mosaicked
                 product from Harmonized Landsat and Sentinel-2 data.
 
-                Note: Cloud/cloud shadow and snow/ice layers are derived from HLS Fmask 
-                quality assurance (QA) data, which sometimes misclassifies sediment-rich water as snow/ice. 
+                Note: Cloud/cloud shadow and snow/ice layers are derived from HLS Fmask
+                quality assurance (QA) data, which sometimes misclassifies sediment-rich water as snow/ice.
                 Snow/ice pixels were reclassified to open water to capture the full inundated extent.
             """
             )
         else:
             map_information = (
-                f"The ARIA/OPERA water extent map is derived from an OPERA DSWx-HLS mosaicked "
-                f"product from Harmonized Landsat and Sentinel-2 data."
-                f"This map depicts regions of full surface water and inundated surface water. "
+                "The ARIA/OPERA water extent map is derived from an OPERA DSWx-HLS mosaicked "
+                "product from Harmonized Landsat and Sentinel-2 data."
+                "This map depicts regions of full surface water and inundated surface water. "
             )
         data_source = "Copernicus Harmonized Landsat and Sentinel-2"
 
@@ -882,40 +1046,42 @@ def make_layout(
         product_label = "DSWx-HLS" if "HLS" in short_name else "DSWx-S1"
         subtitle = f"OPERA Dynamic Surface Water eXtent Confidence ({product_label})"
         map_information = (
-            f"This map depicts the confidence layer associated with the ARIA/OPERA water extent map. "
-            f"It represents the quality, probability, or classification confidence of the surface water."
+            "This map depicts the confidence layer associated with the ARIA/OPERA water extent map. "
+            "It represents the quality, probability, or classification confidence of the surface water."
         )
-        data_source = "Copernicus Harmonized Landsat and Sentinel-2" if "HLS" in short_name else "Copernicus Sentinel-1"
+        data_source = (
+            "Copernicus Harmonized Landsat and Sentinel-2"
+            if "HLS" in short_name
+            else "Copernicus Sentinel-1"
+        )
 
     elif short_name == "OPERA_L3_DIST-ALERT-S1_V1":
         subtitle = "OPERA Surface Disturbance Alert from Sentinel-1 (DIST-ALERT-S1)"
         map_information = (
-            f"The ARIA/OPERA surface disturbance alert map is derived from an OPERA DIST-ALERT-S1 mosaicked "
-            f"product from Copernicus Sentinel-1 data."
-            f"This map depicts regions of surface disturbance since "
-            + layout_date
-            + "."
+            "The ARIA/OPERA surface disturbance alert map is derived from an OPERA DIST-ALERT-S1 mosaicked "
+            "product from Copernicus Sentinel-1 data."
+            "This map depicts regions of surface disturbance since " + layout_date + "."
         )
         data_source = "Copernicus Sentinel-1"
 
     elif short_name == "OPERA_L3_DIST-ALERT-HLS_V1":
         subtitle = "OPERA Surface Disturbance Alert from Harmonized Landsat and Sentinel-2 (DIST-ALERT-HLS)"
         map_information = (
-            f"The ARIA/OPERA surface disturbance alert map is derived from an OPERA DIST-ALERT-HLS mosaicked "
-            f"product from Harmonized Landsat and Sentinel-2 data. "
-            f"This map depicts regions of vegetation disturbance since "
+            "The ARIA/OPERA surface disturbance alert map is derived from an OPERA DIST-ALERT-HLS mosaicked "
+            "product from Harmonized Landsat and Sentinel-2 data. "
+            "This map depicts regions of vegetation disturbance since "
             + layout_date
             + "."
         )
         data_source = "Copernicus Harmonized Landsat and Sentinel-2"
 
-    elif short_name == "OPERA_L2_RTC-S1_V1":
+    else:  # OPERA_L2_RTC-S1_V1
         subtitle = "OPERA Radiometrically Terrain Corrected Backscatter from Sentinel-1 (RTC-S1)"
         map_information = (
-            f"The ARIA/OPERA backscatter map is derived from an OPERA RTC-S1 mosaicked product "
-            f"from Copernicus Sentinel-1 data."
-            f"This map depicts the radar backscatter intensity, which can be used to identify "
-            f"surface features and changes."
+            "The ARIA/OPERA backscatter map is derived from an OPERA RTC-S1 mosaicked product "
+            "from Copernicus Sentinel-1 data."
+            "This map depicts the radar backscatter intensity, which can be used to identify "
+            "surface features and changes."
         )
         data_source = "Copernicus Sentinel-1"
 
@@ -935,7 +1101,7 @@ def make_layout(
     )
 
     data_availability = textwrap.dedent(
-        f"""\
+        """\
         This product is available at: https://aria-share.jpl.nasa.gov/
 
         Visit the OPERA website: https://www.jpl.nasa.gov/go/opera/
@@ -950,10 +1116,7 @@ def make_layout(
     # Wrapping text
     title_wrp = textwrap.fill(layout_title, width=40)
     subtitle_wrp = textwrap.fill(subtitle, width=wrap_width)
-    acquisitions_wrp = textwrap.fill(acquisitions, width=wrap_width)
     map_information_wrp = textwrap.fill(map_information, width=wrap_width)
-    data_sources_wrp = textwrap.fill(data_sources, width=wrap_width)
-    data_availability_wrp = textwrap.fill(data_availability, width=wrap_width)
     disclaimer_wrp = textwrap.fill(disclaimer, width=wrap_width)
 
     # Starting y-position (top of the figure)

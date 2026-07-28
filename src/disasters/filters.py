@@ -2,10 +2,10 @@ import logging
 import os
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
-import uuid
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,9 @@ from .mosaic import get_image_colormap
 logger = logging.getLogger(__name__)
 
 
-def reclassify_snow_ice_as_water(DS: list, conf_DS: list) -> Tuple[list, Optional[dict]]:
+def reclassify_snow_ice_as_water(
+    DS: list, conf_DS: list
+) -> Tuple[list, Optional[dict]]:
     """
     Reclassify false snow/ice positives (value 252) as water (value 1) based on the confidence layers. Only applicable for DSWx-HLS.
 
@@ -28,7 +30,7 @@ def reclassify_snow_ice_as_water(DS: list, conf_DS: list) -> Tuple[list, Optiona
 
     Returns:
         tuple: List of updated rioxarray datasets with 252 reclassified as 1, and the colormap.
-    
+
     Raises:
         ValueError: If conf_DS is missing or if lists do not match in length.
     """
@@ -42,7 +44,9 @@ def reclassify_snow_ice_as_water(DS: list, conf_DS: list) -> Tuple[list, Optiona
 
     try:
         colormap = get_image_colormap(DS[0])
-        logger.info("Colormap successfully retrieved and will be used in reclassified output")
+        logger.info(
+            "Colormap successfully retrieved and will be used in reclassified output"
+        )
     except Exception:
         logger.info("Unable to get colormap")
         colormap = None
@@ -108,7 +112,9 @@ def filter_by_date_and_confidence(
 
     try:
         colormap = get_image_colormap(DS[0])
-        logger.info("Colormap successfully retrieved and will be used in reclassified output")
+        logger.info(
+            "Colormap successfully retrieved and will be used in reclassified output"
+        )
     except Exception:
         logger.info("Unable to get colormap")
         colormap = None
@@ -126,7 +132,7 @@ def filter_by_date_and_confidence(
 
         # Combine masks
         date_mask = valid_data_mask & date_threshold_mask
-        
+
         # Optional confidence mask
         if DS_conf is not None and confidence_threshold is not None:
             conf_layer = DS_conf[i]
@@ -137,7 +143,9 @@ def filter_by_date_and_confidence(
             conf_mask = conf_layer >= confidence_threshold
 
             retained_pixels = conf_mask.sum().item()
-            logger.info(f"Confidence retained: {retained_pixels} / {total_pixels} ({retained_pixels / total_pixels:.2%})")
+            logger.info(
+                f"Confidence retained: {retained_pixels} / {total_pixels} ({retained_pixels / total_pixels:.2%})"
+            )
 
             max_retained_conf = conf_layer.where(conf_mask).max().item()
             logger.info(f"Max confidence among retained pixels: {max_retained_conf}")
@@ -302,7 +310,11 @@ def generate_coastal_mask(bbox: list, master_grid: dict) -> Optional[xr.DataArra
 
 
 def process_dem_and_slope(
-    df: pd.DataFrame, master_grid: dict, threshold: float, output_dir: Path, skip_existing: bool = False
+    df: pd.DataFrame,
+    master_grid: dict,
+    threshold: float,
+    output_dir: Path,
+    skip_existing: bool = False,
 ) -> Optional[np.ndarray]:
     """
     Fetches all DSWx-HLS Band 10 URLs and mosaics them into 'dem.tif' saved at output_dir.
@@ -325,21 +337,28 @@ def process_dem_and_slope(
 
     # Skip Processing if slope.tif already exists
     if skip_existing and slope_output_path.exists():
-        logger.info(f"Slope mask already exists on disk, skipping DEM download/processing.")
+        logger.info(
+            "Slope mask already exists on disk, skipping DEM download/processing."
+        )
         try:
             import rasterio
+
             with rasterio.open(slope_output_path) as src:
                 slope_arr = src.read(1)
-            
+
             mask = (slope_arr < threshold) & (slope_arr != -9999)
-            logger.info(f"Loaded existing slope mask. Masking {np.sum(mask)} pixels < {threshold}°.")
+            logger.info(
+                f"Loaded existing slope mask. Masking {np.sum(mask)} pixels < {threshold}°."
+            )
             return mask
         except Exception as e:
-            logger.warning(f"Failed to read existing slope mask: {e}. Proceeding to recompute...")
+            logger.warning(
+                f"Failed to read existing slope mask: {e}. Proceeding to recompute..."
+            )
 
     # Filter for ALL DSWx-HLS products to get DEMs
-    dswx_rows = df[df['Dataset'] == 'OPERA_L3_DSWX-HLS_V1']
-    
+    dswx_rows = df[df["Dataset"] == "OPERA_L3_DSWX-HLS_V1"]
+
     # Check if any DSWx-HLS products are available to generate the DEM mosaic.
     if dswx_rows.empty:
         logger.warning("No DSWx-HLS products found. Cannot generate DEM or slope mask.")
@@ -348,73 +367,75 @@ def process_dem_and_slope(
     # Construct Band 10 DEM URLs
     dem_urls = []
     # Drop duplicates to avoid downloading/warping the same granule twice
-    for url in dswx_rows['Download URL WTR'].dropna().unique():
-        if '_B01_WTR' in url:
+    for url in dswx_rows["Download URL WTR"].dropna().unique():
+        if "_B01_WTR" in url:
             # Replace WTR with DEM band
-            dem_url = url.replace('_B01_WTR', '_B10_DEM')
-            
+            dem_url = url.replace("_B01_WTR", "_B10_DEM")
+
             # Prefix for GDAL vsicurl
-            if dem_url.startswith('http') and not dem_url.startswith('/vsi'):
-                dem_urls.append(f'/vsicurl/{dem_url}')
+            if dem_url.startswith("http") and not dem_url.startswith("/vsi"):
+                dem_urls.append(f"/vsicurl/{dem_url}")
             else:
                 dem_urls.append(dem_url)
-    
+
     if not dem_urls:
         logger.warning("Could not construct Band 10 URLs.")
         return None
 
     # Extract Master Grid Properties
-    height, width = master_grid['shape'] 
-    transform = master_grid['transform']
-    
+    height, width = master_grid["shape"]
+    transform = master_grid["transform"]
+
     # Calculate bounds (minX, minY, maxX, maxY)
     min_x = transform.c
     max_y = transform.f
     max_x = min_x + (transform.a * width)
     min_y = max_y + (transform.e * height)
-    
+
     output_bounds = [min_x, min_y, max_x, max_y]
-    dst_crs = master_grid.get('dst_crs')
+    dst_crs = master_grid.get("dst_crs")
 
     try:
         # Warp DEMs to Disk (dem.tif), matching the master grid resolution and bounds
         warp_options = gdal.WarpOptions(
-            format='GTiff',
+            format="GTiff",
             outputBounds=output_bounds,
             width=width,
             height=height,
             dstSRS=dst_crs,
-            resampleAlg='bilinear',
-            dstNodata=-9999
+            resampleAlg="bilinear",
+            dstNodata=-9999,
         )
-        
+
         logger.info(f"Writing DEM mosaic to: {dem_output_path}")
         dem_ds = gdal.Warp(str(dem_output_path), dem_urls, options=warp_options)
-        
+
         if dem_ds is None:
             logger.warning("DEM Warp failed.")
             return None
 
         # Calculate Slope (In-Memory from the DEM dataset we just created)
         slope_options = gdal.DEMProcessingOptions(
-            format='GTiff', 
-            computeEdges=True,
-            slopeFormat='degree'
+            format="GTiff", computeEdges=True, slopeFormat="degree"
         )
-        
+
         # Compute and write slope to slope.tif
-        slope_ds = gdal.DEMProcessing(str(slope_output_path), dem_ds, 'slope', options=slope_options)
+        slope_ds = gdal.DEMProcessing(
+            str(slope_output_path), dem_ds, "slope", options=slope_options
+        )
         slope_arr = slope_ds.ReadAsArray()
-        
+
         # Create Mask: True where slope < threshold (and valid data)
         mask = (slope_arr < threshold) & (slope_arr != -9999)
-        
-        logger.info(f"Slope mask generated. Masking {np.sum(mask)} pixels < {threshold}°.")
-        
+
+        logger.info(
+            f"Slope mask generated. Masking {np.sum(mask)} pixels < {threshold}°."
+        )
+
         # Clean up GDAL handles
-        dem_ds = None 
+        dem_ds = None
         slope_ds = None
-        
+
         return mask
 
     except Exception as e:

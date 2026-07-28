@@ -17,9 +17,9 @@ import pyproj
 import rasterio
 import rioxarray
 import xarray as xr
+from opera_utils.disp._remote import open_file
 from rasterio.transform import Affine
 from rioxarray.merge import merge_arrays
-from opera_utils.disp._remote import open_file
 
 from .auth import authenticate
 
@@ -97,7 +97,9 @@ def get_master_crs(df_opera: pd.DataFrame, mode: str) -> Optional[str]:
     return f"EPSG:{most_common_epsg}"
 
 
-def get_master_grid_props(bbox_latlon: list, target_crs_proj4: str, target_res: int = 30) -> dict:
+def get_master_grid_props(
+    bbox_latlon: list, target_crs_proj4: str, target_res: int = 30
+) -> dict:
     """
     Defines a master pixel-aligned grid based on a lat/lon BBOX and target CRS.
 
@@ -113,11 +115,11 @@ def get_master_grid_props(bbox_latlon: list, target_crs_proj4: str, target_res: 
     transformer = pyproj.Transformer.from_crs(
         "EPSG:4326", target_crs_proj4, always_xy=True
     )
-    
+
     # Get corners in target CRS
     corners_lon = [bbox_latlon[2], bbox_latlon[3], bbox_latlon[3], bbox_latlon[2]]
     corners_lat = [bbox_latlon[0], bbox_latlon[0], bbox_latlon[1], bbox_latlon[1]]
-    
+
     xs, ys = transformer.transform(corners_lon, corners_lat)
 
     # Find min/max of transformed coordinates
@@ -146,7 +148,9 @@ def get_master_grid_props(bbox_latlon: list, target_crs_proj4: str, target_res: 
     }
 
 
-def _grid_bounds_from_master_grid(master_grid: dict) -> tuple[float, float, float, float]:
+def _grid_bounds_from_master_grid(
+    master_grid: dict,
+) -> tuple[float, float, float, float]:
     """Return (xmin, ymin, xmax, ymax) bounds for a pixel-aligned master grid."""
     transform = master_grid["transform"]
     height, width = master_grid["shape"]
@@ -222,11 +226,14 @@ def warp_dataarray_to_grid(
         if source_candidate.exists():
             source_path = source_candidate
         elif source_str.startswith(("http://", "https://")):
-            with open_file(
-                source_str,
-                earthdata_username=username,
-                earthdata_password=password,
-            ) as remote_file, open(src_path, "wb") as local_file:
+            with (
+                open_file(
+                    source_str,
+                    earthdata_username=username,
+                    earthdata_password=password,
+                ) as remote_file,
+                open(src_path, "wb") as local_file,
+            ):
                 shutil.copyfileobj(remote_file, local_file)
             source_path = src_path
 
@@ -376,7 +383,14 @@ with rasterio.open(sys.argv[3], "w", **metadata) as dst:
 
     try:
         subprocess.run(
-            [sys.executable, "-c", script, str(array_path), str(metadata_path), str(output_path)],
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(array_path),
+                str(metadata_path),
+                str(output_path),
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -397,16 +411,24 @@ with rasterio.open(sys.argv[3], "w", **metadata) as dst:
                     pass
 
 
-def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_layer_links=None, benchmark_stats=None, username=None, password=None):
+def compile_and_load_data(
+    data_layer_links,
+    mode,
+    conf_layer_links=None,
+    date_layer_links=None,
+    benchmark_stats=None,
+    username=None,
+    password=None,
+):
     """
     Compile and load data from the provided layer links for mosaicking using multithreading.
-    
+
     Args:
         data_layer_links (list): List of URLs corresponding to the OPERA data layers to mosaic.
         mode (str): Mode of operation, e.g., "flood", "fire", "landslide", "earthquake".
         conf_layer_links (list, optional): List of URLs for additional layers to filter false positives.
         date_layer_links (list, optional): List of URLs for date layers to filter by date.
-        benchmark_stats (dict, optional): Mutable dictionary to track benchmarking stats. 
+        benchmark_stats (dict, optional): Mutable dictionary to track benchmarking stats.
                                           If provided, enables benchmark mode.
         username (str, optional): Earthdata username.
         password (str, optional): Earthdata password.
@@ -416,14 +438,12 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
                        May also return conf_DS and date_DS if applicable.
     """
     # If the first link exists as a local path, assume all are local and skip auth.
-    is_local = False
     if data_layer_links and Path(data_layer_links[0]).exists():
-        is_local = True
         logger.info("Local files detected. Skipping Earthdata authentication.")
     else:
         # If credentials weren't passed, authenticate (fallback)
         if not username or not password:
-             username, password = authenticate()
+            username, password = authenticate()
 
     # Ensure only S1A or S1C are used (not both) for a single date
     satellite_counts = Counter()
@@ -449,9 +469,13 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
 
         # Filter auxiliary links consistently if they exist
         if conf_layer_links:
-            conf_layer_links = [link for i, link in enumerate(conf_layer_links) if is_most_common[i]]
+            conf_layer_links = [
+                link for i, link in enumerate(conf_layer_links) if is_most_common[i]
+            ]
         if date_layer_links:
-            date_layer_links = [link for i, link in enumerate(date_layer_links) if is_most_common[i]]
+            date_layer_links = [
+                link for i, link in enumerate(date_layer_links) if is_most_common[i]
+            ]
 
     # Define helpers for loading data
     def _load_single(link):
@@ -466,11 +490,14 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 suffix = source_candidate.suffix or ".tif"
                 source_path = cache_dir / f"{uuid.uuid4().hex}{suffix}"
-                with open_file(
-                    link,
-                    earthdata_username=username,
-                    earthdata_password=password,
-                ) as remote_file, open(source_path, "wb") as local_file:
+                with (
+                    open_file(
+                        link,
+                        earthdata_username=username,
+                        earthdata_password=password,
+                    ) as remote_file,
+                    open(source_path, "wb") as local_file,
+                ):
                     shutil.copyfileobj(remote_file, local_file)
 
             ds = rioxarray.open_rasterio(source_path, masked=False)
@@ -480,7 +507,11 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
             ds.close()
             return loaded
         except Exception:
-            if source_path is not None and source_path.exists() and not Path(str(link)).exists():
+            if (
+                source_path is not None
+                and source_path.exists()
+                and not Path(str(link)).exists()
+            ):
                 try:
                     source_path.unlink()
                 except Exception:
@@ -511,10 +542,12 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
         """Orchestrates loading. If benchmark_stats is set, runs both and tracks cumulative stats."""
         if not links:
             return []
-            
+
         if benchmark_stats is not None:
-            print(f"\n[BENCHMARK] Testing load speeds for {len(links)} items ({label})...")
-            
+            print(
+                f"\n[BENCHMARK] Testing load speeds for {len(links)} items ({label})..."
+            )
+
             # Run Sequential
             sequential_results = []
             t0 = time.time()
@@ -523,44 +556,46 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
                 t_seq = time.time() - t0
             finally:
                 _close_datasets(sequential_results)
-            
+
             # Run Concurrent
             t0 = time.time()
             results = _run_concurrent(links)
             t_conc = time.time() - t0
-            
+
             # Update Globals - Using the 'loading' key
-            if 'loading' in benchmark_stats:
-                benchmark_stats['loading']['seq'] += t_seq
-                benchmark_stats['loading']['conc'] += t_conc
-                
+            if "loading" in benchmark_stats:
+                benchmark_stats["loading"]["seq"] += t_seq
+                benchmark_stats["loading"]["conc"] += t_conc
+
                 # Calculate metrics for printout
-                cum_seq = benchmark_stats['loading']['seq']
-                cum_conc = benchmark_stats['loading']['conc']
+                cum_seq = benchmark_stats["loading"]["seq"]
+                cum_conc = benchmark_stats["loading"]["conc"]
                 cum_saved = cum_seq - cum_conc
                 cum_speedup = cum_seq / cum_conc if cum_conc > 0 else 0
             else:
                 # Fallback if structure is simple
                 cum_saved = 0
                 cum_speedup = 0
-            
+
             # Calculate local metrics
             speedup = t_seq / t_conc if t_conc > 0 else 0
             saved = t_seq - t_conc
-            
+
             print(f"   - Sequential: {t_seq:.2f}s")
             print(f"   - Concurrent: {t_conc:.2f}s")
             print(f"   >>> SPEEDUP: {speedup:.2f}x (Saved {saved:.2f}s)")
-            if 'loading' in benchmark_stats:
-                print(f"   [CUMULATIVE] Total Saved: {cum_saved:.2f}s | Global Speedup: {cum_speedup:.2f}x")
+            if "loading" in benchmark_stats:
+                print(
+                    f"   [CUMULATIVE] Total Saved: {cum_saved:.2f}s | Global Speedup: {cum_speedup:.2f}x"
+                )
             print("-" * 50)
-            
+
             return results
         else:
             # Standard fast path (concurrent only)
             logger.info(f"Loading {len(links)} '{label}' granules concurrently...")
             return _run_concurrent(links)
-    
+
     # Load the primary data layer (DS)
     DS = load_datasets(data_layer_links, label="Primary Data")
 
@@ -570,7 +605,11 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
         return DS, conf_DS
 
     # If conf_layer_links AND date_layer_links AND mode == 'fire' or 'landslide'
-    if (conf_layer_links and date_layer_links and (mode == "fire" or mode == "landslide")):
+    if (
+        conf_layer_links
+        and date_layer_links
+        and (mode == "fire" or mode == "landslide")
+    ):
         date_DS = load_datasets(date_layer_links, label="Date")
         conf_DS = load_datasets(conf_layer_links, label="Confidence")
         return DS, date_DS, conf_DS
@@ -578,7 +617,9 @@ def compile_and_load_data(data_layer_links, mode, conf_layer_links=None, date_la
         return DS
 
 
-def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dict = {}) -> Tuple[xr.DataArray, Optional[dict], float]:
+def mosaic_opera(
+    DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dict = {}
+) -> Tuple[xr.DataArray, Optional[dict], float]:
     """
     Mosaics a list of OPERA product granules into a single image (in memory).
 
@@ -648,7 +689,7 @@ def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dic
 
     try:
         colormap = get_image_colormap(DS[0])
-    except Exception as e:
+    except Exception:
         colormap = None
     return merged_arr, colormap, nodata
 
@@ -656,13 +697,13 @@ def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dic
 def opera_rules(product: str = "OPERA_L3_DSWX-S1_V1", nodata: int = 255):
     """
     Returns a custom callabale rasterio.merge method for OPERA products using pixel priority rules.
-    
+
     Args:
         product (str): OPERA product short name, used to determine pixel prioritization in regions of OPERA granule overlap.
             Options include: "OPERA_L3_DSWX-HLS_V1","OPERA_L3_DSWX-S1_V1", "OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ANN-HLS_V1", "OPERA_L2_RTC-S1_V1"
             Default: "OPERA_L3_DSWX-S1_V1"
         nodata (int): The nodata value for the OPERA product. Default is 255.
-        
+
     Returns:
         method (function): A function that implements the custom merge method for the specified OPERA product.
     """
@@ -744,7 +785,7 @@ def opera_rules(product: str = "OPERA_L3_DSWX-S1_V1", nodata: int = 255):
             priority_array[val] = pri
 
         valid_mask = new_data[0] != nodata
-        
+
         new_vals_safe = np.clip(new_data[0], 0, max_val - 1)
         old_vals_safe = np.clip(old_data[0], 0, max_val - 1)
 
@@ -779,15 +820,15 @@ def contains_unexpected_values(DA: list, valid_values: set) -> bool:
             vals_to_check = da.values[0]
         else:
             vals_to_check = da.values
-            
+
         unique_vals = np.unique(vals_to_check)
-        
+
         # Filter out NaNs if any exist, as they aren't in the priority dictionary
         unique_vals = unique_vals[~np.isnan(unique_vals)]
-        
+
         if not set(unique_vals).issubset(valid_values):
             return True
-            
+
     return False
 
 
@@ -1041,7 +1082,11 @@ def array_to_image(
         ):
             crs = array.rio.crs
             transform = array.rio.transform()
-        elif source is None and hasattr(array, "encoding") and ("source" in array.encoding):
+        elif (
+            source is None
+            and hasattr(array, "encoding")
+            and ("source" in array.encoding)
+        ):
             source = array.encoding["source"]
 
         if array.ndim == 2 and ("x" in array.dims) and ("y" in array.dims):
@@ -1157,7 +1202,7 @@ def array_to_image(
         metadata["count"] = array.shape[2]
     if compress is not None and (driver in ["GTiff", "COG"]):
         metadata["compress"] = compress
-    
+
     # Pass colormap to metadata dictionary (if applicable)
     if colormap:
         metadata["colormap"] = colormap
@@ -1174,17 +1219,19 @@ def array_to_image(
         metadata["transform"],
         metadata.get("photometric"),
     )
-    
+
     output_path = Path(output)
     if output_path.exists():
-        logger.info("array_to_image removing existing output before rewrite: %s", output)
+        logger.info(
+            "array_to_image removing existing output before rewrite: %s", output
+        )
         output_path.unlink()
-        
+
     # Execute through the safe memory-isolated subprocess if it's a TIF!
     if driver in ["GTiff", "COG"]:
         _write_raster_in_subprocess(array, output, metadata)
         return output
-        
+
     # Fallback to direct rasterio writing for non-TIF formats (e.g. PNG/JPEG)
     with rasterio.open(output, "w", **metadata) as dst:
         if array.ndim == 2:

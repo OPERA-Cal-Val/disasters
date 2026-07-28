@@ -33,7 +33,7 @@ def ensure_directory(output_dir: Path) -> Path:
 
 def scan_local_directory(local_dir: Path) -> pd.DataFrame:
     """
-    Scans a local directory for OPERA Geotiffs, parses their filenames, 
+    Scans a local directory for OPERA Geotiffs, parses their filenames,
     and constructs a DataFrame mimicking the structure of 'opera_products_metadata.xls'.
 
     Args:
@@ -44,11 +44,13 @@ def scan_local_directory(local_dir: Path) -> pd.DataFrame:
     """
     # Scan for all TIF files recursively
     tif_files = list(local_dir.rglob("*.tif"))
-    
+
     # Check if directory is empty or has no TIFs
     if not tif_files:
         logger.error(f"No .tif files found in {local_dir}.")
-        logger.info("Please ensure your local directory contains valid OPERA GeoTIFF products.")
+        logger.info(
+            "Please ensure your local directory contains valid OPERA GeoTIFF products."
+        )
         logger.info("The script expects files like: OPERA_L3_DSWx-HLS_..._WTR.tif")
         return pd.DataFrame()
 
@@ -56,7 +58,7 @@ def scan_local_directory(local_dir: Path) -> pd.DataFrame:
 
     # Dictionary to hold grouped granule data
     granules = defaultdict(dict)
-    
+
     # Map filename prefixes to OPERA Dataset IDs
     product_map = {
         "OPERA_L3_DSWX-HLS": "OPERA_L3_DSWX-HLS_V1",
@@ -72,38 +74,38 @@ def scan_local_directory(local_dir: Path) -> pd.DataFrame:
 
     for f in tif_files:
         name = f.name
-        
+
         # Identify product type
         prod_key = None
         for key in product_map.keys():
             if name.startswith(key):
                 prod_key = key
                 break
-        
+
         if not prod_key:
             # Skip non-OPERA files
             continue
-            
+
         dataset_name = product_map[prod_key]
 
         # Extract Date and Tile ID
-        parts = name.split('_')
+        parts = name.split("_")
         date_str = None
         tile_id = "UNKNOWN"
-        
+
         for i, part in enumerate(parts):
-            if re.match(r'\d{8}T\d{6}Z', part):
+            if re.match(r"\d{8}T\d{6}Z", part):
                 date_str = part
                 if i > 0:
-                    tile_id = parts[i-1]
+                    tile_id = parts[i - 1]
                 break
-        
+
         if not date_str:
             continue
 
         # Identify layer type
         layer_col = None
-        
+
         # DSWx layers
         if name.endswith("WTR.tif") and "BWTR" not in name:
             layer_col = "WTR"
@@ -111,7 +113,7 @@ def scan_local_directory(local_dir: Path) -> pd.DataFrame:
             layer_col = "BWTR"
         elif name.endswith("CONF.tif") and "VEG-DIST" not in name:
             layer_col = "CONF"
-            
+
         # DIST layers
         elif "VEG-ANOM-MAX" in name:
             layer_col = "VEG-ANOM-MAX"
@@ -121,37 +123,39 @@ def scan_local_directory(local_dir: Path) -> pd.DataFrame:
             layer_col = "VEG-DIST-DATE"
         elif "VEG-DIST-CONF" in name:
             layer_col = "VEG-DIST-CONF"
-            
+
         # RTC layers
         elif name.endswith("_VV.tif"):
             layer_col = "RTC-VV"
         elif name.endswith("_VH.tif"):
             layer_col = "RTC-VH"
-            
+
         # Fallback
         else:
-            suffix = parts[-1].replace('.tif', '')
-            if suffix.isupper(): 
+            suffix = parts[-1].replace(".tif", "")
+            if suffix.isupper():
                 layer_col = suffix
 
         if not layer_col:
             continue
 
         # Group by Unique Key (Dataset, Date, Tile)
-        group_key = (dataset_name, date_str, tile_id) 
-        
+        group_key = (dataset_name, date_str, tile_id)
+
         # Determine column name expected by generate_products()
         col_name = f"Download URL {layer_col}"
-        
+
         granules[group_key][col_name] = str(f.absolute())
         granules[group_key]["Start Time"] = date_str
         granules[group_key]["Dataset"] = dataset_name
-        
+
         files_processed_count += 1
 
     # Final check
     if not granules:
-        logger.error(f"Found {len(tif_files)} files in {local_dir}, but none matched expected OPERA filename patterns.")
+        logger.error(
+            f"Found {len(tif_files)} files in {local_dir}, but none matched expected OPERA filename patterns."
+        )
         return pd.DataFrame()
 
     # Convert to DataFrame
@@ -160,9 +164,13 @@ def scan_local_directory(local_dir: Path) -> pd.DataFrame:
         rows.append(data)
 
     df = pd.DataFrame(rows)
-    df['Start Time'] = pd.to_datetime(df['Start Time'], format='%Y%m%dT%H%M%SZ', errors='coerce')
-    
-    logger.info(f"Constructed local metadata DataFrame with {len(df)} unique granules (from {files_processed_count} files).")
+    df["Start Time"] = pd.to_datetime(
+        df["Start Time"], format="%Y%m%dT%H%M%SZ", errors="coerce"
+    )
+
+    logger.info(
+        f"Constructed local metadata DataFrame with {len(df)} unique granules (from {files_processed_count} files)."
+    )
     return df
 
 
