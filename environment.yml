@@ -27,6 +27,7 @@ dependencies:
   - xarray
   - zarr
   - openpyxl
+  - pre-commit
 
   - pip:
       - git+https://github.com/OPERA-Cal-Val/next_pass.git@main

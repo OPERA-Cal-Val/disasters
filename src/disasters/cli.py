@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 
 import click
 
@@ -42,10 +42,10 @@ def cli() -> None:
     help=(
         "Bounding box or area of interest. MUST be enclosed in double quotes if it contains spaces. "
         "Accepted formats: "
-        "1) 4 floats: \"S N W E\" | "
-        "2) WKT string: \"POLYGON((...))\" | "
-        "3) Local path: \"/path/to/file.kml\" | "
-        "4) Web URL: \"https://example.com/AOI.geojson\""
+        '1) 4 floats: "S N W E" | '
+        '2) WKT string: "POLYGON((...))" | '
+        '3) Local path: "/path/to/file.kml" | '
+        '4) Web URL: "https://example.com/AOI.geojson"'
     ),
 )
 @click.option(
@@ -53,7 +53,7 @@ def cli() -> None:
     "--zoom-bbox",
     type=str,
     default=None,
-    help="Optional bounding box for the zoom-in inset map. MUST be 4 floats enclosed in double quotes (e.g., \"S N W E\").",
+    help='Optional bounding box for the zoom-in inset map. MUST be 4 floats enclosed in double quotes (e.g., "S N W E").',
 )
 @click.option(
     "-o",
@@ -165,17 +165,17 @@ def cli() -> None:
     help=("Reclassify false snow/ice positives as water in DSWx-HLS products ONLY."),
 )
 @click.option(
-    "-st", 
-    "--slope-threshold", 
-    type=int, 
-    metavar="DEG", 
-    default=None, 
+    "-st",
+    "--slope-threshold",
+    type=int,
+    metavar="DEG",
+    default=None,
     required=False,
     help="Slope threshold in degrees (0-100). Pixels with slope < threshold will be masked in Landslide mode.",
 )
 @click.option(
-    "--benchmark", 
-    is_flag=True, 
+    "--benchmark",
+    is_flag=True,
     default=False,
     help="If set, runs data loading in both sequential and concurrent modes to compare performance.",
 )
@@ -190,15 +190,15 @@ def cli() -> None:
     "--compute_cloudiness",
     is_flag=True,
     default=False,
-    help="Enable HLS cloud cover calculation. This may significantly increase runtime, especially for large AOIs or wide date ranges."
+    help="Enable HLS cloud cover calculation. This may significantly increase runtime, especially for large AOIs or wide date ranges.",
 )
 @click.option(
-    "-se", "--skip-existing",
+    "-se",
+    "--skip-existing",
     is_flag=True,
     default=False,
     help="Skip generation of files that already exist in the output directory.",
 )
-
 def run(
     bbox: str,
     zoom_bbox: Optional[str],
@@ -219,21 +219,25 @@ def run(
     benchmark: bool,
     no_mask: bool,
     compute_cloudiness: bool,
-    skip_existing: bool
+    skip_existing: bool,
 ) -> None:
     """Run the disaster pipeline (end-to-end)."""
     if mode and product:
-        raise click.UsageError("You cannot use both --mode and --product at the same time.")
+        raise click.UsageError(
+            "You cannot use both --mode and --product at the same time."
+        )
     if not mode and not product:
-        mode = "flood" # Default to flood mode if neither is provided
+        mode = "flood"  # Default to flood mode if neither is provided
 
     # Ensure slope values are between 0 and 100 degrees, if provided
     if slope_threshold is not None and not (0 <= slope_threshold <= 100):
-        raise click.BadParameter("Slope threshold must be between 0 and 100.", param_hint="--slope-threshold")
+        raise click.BadParameter(
+            "Slope threshold must be between 0 and 100.", param_hint="--slope-threshold"
+        )
 
     # Process bbox tokens into a list of floats OR a single WKT/path string
     bbox_parts = bbox.replace(",", " ").split()
-    
+
     if len(bbox_parts) == 4:
         try:
             bbox_arg = [float(x) for x in bbox_parts]
@@ -251,9 +255,15 @@ def run(
             try:
                 zoom_bbox_arg = [float(x) for x in zoom_parts]
             except ValueError:
-                raise click.BadParameter("Zoom bounding box must contain exactly 4 valid numbers.", param_hint="--zoom-bbox")
+                raise click.BadParameter(
+                    "Zoom bounding box must contain exactly 4 valid numbers.",
+                    param_hint="--zoom-bbox",
+                )
         else:
-            raise click.BadParameter("Zoom bounding box must contain exactly 4 valid numbers.", param_hint="--zoom-bbox")
+            raise click.BadParameter(
+                "Zoom bounding box must contain exactly 4 valid numbers.",
+                param_hint="--zoom-bbox",
+            )
 
     # Build the PipelineConfig object
     cfg = PipelineConfig(
@@ -276,7 +286,7 @@ def run(
         benchmark=benchmark,
         no_mask=no_mask,
         compute_cloudiness=compute_cloudiness,
-        skip_existing=skip_existing
+        skip_existing=skip_existing,
     )
 
     mode_dir = run_pipeline(cfg)
@@ -294,7 +304,7 @@ def run(
     required=True,
     help=(
         "Bounding box or area of interest. MUST be enclosed in double quotes if it contains spaces. "
-        "Accepted formats: \"S N W E\" | \"POLYGON((...))\" | \"/path/to/file.kml\""
+        'Accepted formats: "S N W E" | "POLYGON((...))" | "/path/to/file.kml"'
     ),
 )
 @click.option(
@@ -348,7 +358,7 @@ def run(
     "--compute_cloudiness",
     is_flag=True,
     default=False,
-    help="Enable HLS cloud cover calculation."
+    help="Enable HLS cloud cover calculation.",
 )
 def search(
     bbox: str,
@@ -358,12 +368,14 @@ def search(
     mode: Optional[str],
     product: tuple[str, ...],
     satellites: tuple[str, ...],
-    compute_cloudiness: bool
+    compute_cloudiness: bool,
 ) -> None:
     """Query OPERA catalog and save metadata without downloading imagery."""
     if mode and product:
-        raise click.UsageError("You cannot use both --mode and --product at the same time.")
-    
+        raise click.UsageError(
+            "You cannot use both --mode and --product at the same time."
+        )
+
     # Process bbox tokens
     bbox_parts = bbox.replace(",", " ").split()
     if len(bbox_parts) == 4:
@@ -375,7 +387,7 @@ def search(
         bbox_arg = bbox
 
     from .pipeline import run_search_only
-    
+
     logger.info("Starting standalone search pipeline...")
     out_dir = run_search_only(
         bbox=bbox_arg,
@@ -385,9 +397,9 @@ def search(
         mode=mode,
         product=list(product) if product else None,
         satellites=list(satellites) if satellites else None,
-        compute_cloudiness=compute_cloudiness
+        compute_cloudiness=compute_cloudiness,
     )
-    
+
     if out_dir:
         logger.info(f"Metadata safely saved to: {out_dir}")
     else:
@@ -402,7 +414,7 @@ def search(
     required=True,
     help=(
         "Bounding box or area of interest. MUST be enclosed in double quotes if it contains spaces. "
-        "Accepted formats: \"S N W E\" | \"POLYGON((...))\" | \"/path/to/file.kml\""
+        'Accepted formats: "S N W E" | "POLYGON((...))" | "/path/to/file.kml"'
     ),
 )
 @click.option(
@@ -448,9 +460,8 @@ def search(
     "--compute_cloudiness",
     is_flag=True,
     default=False,
-    help="Enable HLS cloud cover calculation. This may significantly increase runtime, especially for large AOIs or wide date ranges."
+    help="Enable HLS cloud cover calculation. This may significantly increase runtime, especially for large AOIs or wide date ranges.",
 )
-
 def download(
     bbox: str,
     output_dir: Path,
@@ -458,12 +469,14 @@ def download(
     number_of_dates: int,
     mode: Optional[str],
     product: tuple[str, ...],
-    compute_cloudiness: bool
+    compute_cloudiness: bool,
 ) -> None:
     """Download OPERA granules over an AOI/time window for local use."""
     if mode and product:
-        raise click.UsageError("You cannot use both --mode and --product at the same time.")
-        
+        raise click.UsageError(
+            "You cannot use both --mode and --product at the same time."
+        )
+
     # Process bbox tokens
     bbox_parts = bbox.replace(",", " ").split()
     if len(bbox_parts) == 4:
@@ -475,7 +488,7 @@ def download(
         bbox_arg = bbox
 
     from .pipeline import run_download_only
-    
+
     logger.info("Starting standalone download pipeline...")
     out_dir = run_download_only(
         bbox=bbox_arg,
@@ -484,9 +497,9 @@ def download(
         number_of_dates=number_of_dates,
         mode=mode,
         product=list(product) if product else None,
-        compute_cloudiness=compute_cloudiness
+        compute_cloudiness=compute_cloudiness,
     )
-    
+
     if out_dir:
         logger.info(f"Download complete. Files saved to: {out_dir}")
     else:
@@ -517,24 +530,20 @@ def download(
     help=(
         "Optional bounding box to crop the output. If omitted, the pipeline computes the geographic union of all inputs. "
         "MUST be enclosed in double quotes if it contains spaces. "
-        "Accepted formats: \"S N W E\" | \"POLYGON((...))\" | \"/path/to/file.kml\""
+        'Accepted formats: "S N W E" | "POLYGON((...))" | "/path/to/file.kml"'
     ),
 )
 @click.option(
-    "--benchmark", 
-    is_flag=True, 
+    "--benchmark",
+    is_flag=True,
     default=False,
     help="If set, tracks performance metrics during the mosaicking process.",
 )
-
 def mosaic(
-    input_dir: Path,
-    output_dir: Path,
-    bbox: Optional[str],
-    benchmark: bool
+    input_dir: Path, output_dir: Path, bbox: Optional[str], benchmark: bool
 ) -> None:
     """Stitch local OPERA granules into analysis-ready mosaics (No analysis/layouts)."""
-    
+
     # Process optional bbox using the same parsing as the run command
     bbox_arg = None
     if bbox is not None:
@@ -543,9 +552,11 @@ def mosaic(
             try:
                 coords = [float(x) for x in bbox_parts]
                 # Auto-swap S/N if flipped
-                if coords[0] > coords[1]: coords[0], coords[1] = coords[1], coords[0]
+                if coords[0] > coords[1]:
+                    coords[0], coords[1] = coords[1], coords[0]
                 # Auto-swap W/E if flipped
-                if coords[2] > coords[3]: coords[2], coords[3] = coords[3], coords[2]
+                if coords[2] > coords[3]:
+                    coords[2], coords[3] = coords[3], coords[2]
                 bbox_arg = coords
             except ValueError:
                 bbox_arg = bbox
@@ -554,19 +565,17 @@ def mosaic(
 
     # Import the dedicated mosaic pipeline (we will build this next)
     from .pipeline import run_mosaic_only
-    
+
     logger.info("Starting mosaic pipeline...")
     output_path = run_mosaic_only(
-        input_dir=input_dir,
-        output_dir=output_dir,
-        bbox=bbox_arg,
-        benchmark=benchmark
+        input_dir=input_dir, output_dir=output_dir, bbox=bbox_arg, benchmark=benchmark
     )
-    
+
     if output_path:
         logger.info(f"Mosaicking complete. Outputs saved to: {output_path}")
     else:
         logger.warning("Mosaic pipeline exited without producing outputs.")
+
 
 if __name__ == "__main__":
     cli()

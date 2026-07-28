@@ -48,7 +48,9 @@ def authenticate() -> tuple[str, str]:
     try:
         temp_creds_req = earthaccess.get_s3_credentials(daac="ASF")
     except Exception as e:
-        print(f"[WARNING] Could not get S3 credentials; continuing without AWS session: {e}")
+        print(
+            f"[WARNING] Could not get S3 credentials; continuing without AWS session: {e}"
+        )
 
     # Setup GLOBAL GDAL configuration (For raw osgeo.gdal tools like Warp)
     gdal.SetConfigOption("GDAL_HTTP_COOKIEFILE", cookie_path)
@@ -66,20 +68,28 @@ def authenticate() -> tuple[str, str]:
     )
 
     env_signature = (
-        cookie_path,
-        temp_creds_req["accessKeyId"],
-        temp_creds_req["secretAccessKey"],
-        temp_creds_req["sessionToken"],
-    ) if isinstance(temp_creds_req, dict) and all(
-        k in temp_creds_req for k in ("accessKeyId", "secretAccessKey", "sessionToken")
-    ) else (
-        cookie_path,
-        None,
-        None,
-        None,
+        (
+            cookie_path,
+            temp_creds_req["accessKeyId"],
+            temp_creds_req["secretAccessKey"],
+            temp_creds_req["sessionToken"],
+        )
+        if isinstance(temp_creds_req, dict)
+        and all(
+            k in temp_creds_req
+            for k in ("accessKeyId", "secretAccessKey", "sessionToken")
+        )
+        else (
+            cookie_path,
+            None,
+            None,
+            None,
+        )
     )
 
-    if isinstance(temp_creds_req, dict) and all(k in temp_creds_req for k in ("accessKeyId", "secretAccessKey", "sessionToken")):
+    if isinstance(temp_creds_req, dict) and all(
+        k in temp_creds_req for k in ("accessKeyId", "secretAccessKey", "sessionToken")
+    ):
         # Apply AWS Creds to Rasterio
         session = boto3.Session(
             aws_access_key_id=temp_creds_req["accessKeyId"],
@@ -88,7 +98,7 @@ def authenticate() -> tuple[str, str]:
             region_name="us-west-2",
         )
         rio_env = rasterio.Env(AWSSession(session), **env_kwargs)
-        
+
         # Apply AWS Creds to raw GDAL
         gdal.SetConfigOption("AWS_ACCESS_KEY_ID", temp_creds_req["accessKeyId"])
         gdal.SetConfigOption("AWS_SECRET_ACCESS_KEY", temp_creds_req["secretAccessKey"])
@@ -96,7 +106,9 @@ def authenticate() -> tuple[str, str]:
         gdal.SetConfigOption("AWS_REGION", "us-west-2")
     else:
         if temp_creds_req is not None:
-            print("[WARNING] S3 credentials missing expected keys; continuing without AWS session.")
+            print(
+                "[WARNING] S3 credentials missing expected keys; continuing without AWS session."
+            )
         rio_env = rasterio.Env(**env_kwargs)
 
     # Keep one Rasterio env open per process and refresh it only when credentials change.
