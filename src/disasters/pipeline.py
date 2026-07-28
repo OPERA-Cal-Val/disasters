@@ -1015,7 +1015,10 @@ def run_slope_filter_only(local_dir: Path, slope_threshold: float, output_dir: P
     logger.info(f"[Pipeline] Running standalone SLOPE pipeline using data from: {local_dir}")
 
     logger.info("[Pipeline] Authenticating with Earthdata...")
-    authenticate()
+    try:
+        authenticate()
+    except Exception as e:
+        logger.warning(f"[Pipeline] Earthdata authentication failed or skipped: {e}")
 
     # Gather metadata about the local OPERA files to calculate spatial properties and find valid rasters to process
     df_opera = scan_local_directory(local_dir)
