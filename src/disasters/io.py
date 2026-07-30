@@ -18,16 +18,21 @@ def parse_bbox_input(bbox_string: str) -> list[float] | str:
     """
     logger = logging.getLogger(__name__)
 
+    # Check if it's a WKT string
+    if bbox_string.upper().startswith(("POLYGON", "MULTIPOLYGON", "BBOX")):
+        logger.info("Detected WKT string. Preserving complex geometry...")
+        return bbox_string
+
+    # Check if it's a web-hosted AOI file
+    if bbox_string.lower().startswith(("http://", "https://")):
+        logger.info(f"Detected URL for AOI. Preserving geometry from: {bbox_string}")
+        return bbox_string
+
     # Check if it's a geospatial file-type (KML, GeoJSON, SHP)
     if os.path.isfile(bbox_string):
         logger.info(
             f"Detected file path for AOI. Preserving geometry from: {bbox_string}"
         )
-        return bbox_string
-
-    # Check if it's a WKT string
-    if bbox_string.upper().startswith(("POLYGON", "MULTIPOLYGON", "BBOX")):
-        logger.info("Detected WKT string. Preserving complex geometry...")
         return bbox_string
 
     # Assume it's a raw coordinate string

@@ -34,6 +34,13 @@ def cli() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
+def _parse_zoom_bbox(zoom_bbox: str) -> list[float]:
+    zoom_parts = zoom_bbox.replace(",", " ").split()
+    if len(zoom_parts) != 4:
+        raise ValueError("Zoom bounding box must contain exactly 4 valid numbers.")
+    return [float(x) for x in zoom_parts]
+
+
 @cli.command(name="run")
 @click.option(
     "-b",
@@ -256,7 +263,7 @@ def run(
     zoom_bbox_arg = None
     if zoom_bbox is not None:
         try:
-            zoom_bbox_arg = parse_bbox_input(zoom_bbox)
+            zoom_bbox_arg = _parse_zoom_bbox(zoom_bbox)
         except Exception as e:
             raise click.BadParameter(
                 f"Failed to parse zoom bounding box: {e}", param_hint="--zoom-bbox"
