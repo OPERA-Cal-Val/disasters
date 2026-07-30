@@ -378,22 +378,33 @@ def process_dem_and_slope(
         
         auto_bbox, _ = get_local_spatial_properties(df)
         
+        # Purge any stale DEMs from the output directory from previous aborted runs
+        for stale_dem in output_dir.glob("*_B10_DEM*.tif"):
+            try:
+                stale_dem.unlink()
+            except Exception:
+                pass
+        
         # Query CMR for missing DEMs and download them to the OUTPUT directory
         fetch_missing_dems(auto_bbox, output_dir)
         
         # Inject newly downloaded DEMs from the output directory into our path list
         new_dems = [str(p) for p in output_dir.glob("*_B10_DEM*.tif")]
-        for dem_path in new_dems:
-            if dem_path not in all_paths:
-                all_paths.append(dem_path)
-                
-        # Also grab any existing DEMs from the local input directory (just in case they were already there)
-        if all_paths:
-            local_dir = Path(all_paths[0]).parent
-            existing_dems = [str(p) for p in local_dir.glob("*_B10_DEM*.tif")]
-            for dem_path in existing_dems:
+        
+        if new_dems:
+            # Use the freshly fetched DEMs
+            for dem_path in new_dems:
                 if dem_path not in all_paths:
                     all_paths.append(dem_path)
+        else:
+            # Fallback to grab any existing DEMs from the local input directory 
+            # ONLY if the remote fetch failed or returned nothing
+            if all_paths:
+                local_dir = Path(all_paths[0]).parent
+                existing_dems = [str(p) for p in local_dir.glob("*_B10_DEM*.tif")]
+                for dem_path in existing_dems:
+                    if dem_path not in all_paths:
+                        all_paths.append(dem_path)
                     
         # Verify we actually have DEMs to process
         has_dem_files = any('_B10_DEM' in str(p) for p in all_paths)
