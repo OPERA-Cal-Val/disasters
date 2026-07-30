@@ -84,24 +84,31 @@ def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
     """
     import datetime
     import earthaccess
-    import logging
     
-    logger.info("[DEM Fetcher] Missing local DEMs detected. Querying Earthdata for static topography...")
+    logger = logging.getLogger(__name__) 
+    
+    # Look back 90 days to ensure we find a valid DEM
+    days_back = 90
+    
+    # Fetch up to 50 granulesto ensure complete spatial coverage 
+    max_granules = 50
+
+    logger.info(f"[DEM Fetcher] Missing local DEMs detected. Querying Earthdata for static topography (last {days_back} days)...")
     
     try:
         # Repackage our [S, N, W, E] bbox into Earthaccess format: (W, S, E, N)
         s, n, w, e = bbox
         cmr_bbox = (w, s, e, n)
         
-        # Query Earthdata for recent DSWx-HLS granules covering the bbox (last 60 days)
+        # Query Earthdata for recent DSWx-HLS granules covering the bbox
         end_date = datetime.datetime.now(datetime.timezone.utc)
-        start_date = end_date - datetime.timedelta(days=60)
+        start_date = end_date - datetime.timedelta(days=days_back)
         
         results = earthaccess.search_data(
             short_name="OPERA_L3_DSWX-HLS_V1",
             bounding_box=cmr_bbox,
             temporal=(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")),
-            count=20 # Grab enough to cover the bbox footprint
+            count=max_granules
         )
         
         if not results:
