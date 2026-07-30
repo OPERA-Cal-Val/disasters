@@ -716,6 +716,7 @@ def run_download_only(
             "HLS Download URL (B03/Green)",
             "HLS Download URL (B02/Blue)",
             "HLS Download URL (B8A/B05/NIR)",
+            "HLS Download URL (Fmask)",
         ]
         for col in hls_cols:
             if col in df_opera.columns:
@@ -1573,6 +1574,7 @@ def generate_products(
         "HLS Download URL (B03/Green)": "HLS-GREEN",
         "HLS Download URL (B02/Blue)": "HLS-BLUE",
         "HLS Download URL (B8A/B05/NIR)": "HLS-NIR",
+        "HLS Download URL (Fmask)": "HLS-FMASK",
     }
     for old_col, new_layer in hls_mapping.items():
         if old_col in df_opera.columns:
