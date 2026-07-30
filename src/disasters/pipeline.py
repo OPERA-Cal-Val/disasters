@@ -37,7 +37,7 @@ from .filters import (
     process_dem_and_slope,
     reclassify_snow_ice_as_water,
 )
-from .io import cleanup_temp_file, ensure_directory, scan_local_directory
+from .io import cleanup_temp_file, ensure_directory, scan_local_directory, export_aoi
 from .layouts import make_layout, make_map
 from .mosaic import (
     array_to_image,
@@ -48,6 +48,7 @@ from .mosaic import (
     mosaic_opera,
     warp_dataarray_to_grid,
 )
+from utils.utils import bbox_type, bbox_to_geometry
 
 logger = logging.getLogger(__name__)
 
@@ -295,8 +296,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     # Convert WKT/File to an SNWE list for internal mosaicking logic
     if isinstance(config.bbox, str):
         try:
-            from utils.utils import bbox_to_geometry, bbox_type
-
             bbox_parsed = bbox_type([config.bbox])
             geom, bounds, centroid = bbox_to_geometry(bbox_parsed, config.output_dir)
             minx, miny, maxx, maxy = bounds
@@ -483,6 +482,17 @@ def run_search_only(
 
     # Read the metadata just to provide a helpful summary to the user
     df_opera = read_opera_metadata(output_dir_np)
+
+    # Export AOI to the metadata folder
+    if isinstance(bbox, str):
+        try:
+            _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
+            export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], output_dir_np)
+        except Exception: 
+            pass
+    else:
+        export_aoi(bbox, output_dir_np)
+
     if df_opera.empty:
         logger.warning("No products found for the specified criteria.")
         return output_dir_np
@@ -607,6 +617,17 @@ def run_download_only(
 
     # Read the metadata
     df_opera = read_opera_metadata(output_dir_np)
+
+    # Export AOI to the data folder
+    if isinstance(bbox, str):
+        try:
+            _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
+            export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], data_dir)
+        except Exception: 
+            pass
+    else:
+        export_aoi(bbox, data_dir)
+
     if df_opera.empty:
         logger.warning("No products found for the specified criteria.")
         return None
@@ -815,6 +836,10 @@ def run_mosaic_only(
     else:
         internal_bbox = auto_bbox
         logger.info(f"Auto-calculated bounding box from input files: {internal_bbox}")
+    
+    # Export AOI to the mosaic output folder
+    if internal_bbox is not None:
+        export_aoi(internal_bbox, output_dir)
 
     # Calculate Master Grid
     crs_obj = pyproj.CRS.from_string(target_crs_proj4)
@@ -1553,6 +1578,9 @@ def generate_products(
     data_dir = ensure_directory(mode_dir / "data")
     maps_dir = ensure_directory(mode_dir / "maps")
     layouts_dir = ensure_directory(mode_dir / "layouts")
+
+    # Export the AOI bounding box to the data folder
+    export_aoi(bbox, data_dir)
 
     # Determine most common UTM CRS to warp all granules to across all dates
     target_crs_proj4 = get_master_crs(df_mode_data, mode)

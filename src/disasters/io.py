@@ -1,10 +1,11 @@
+from collections import defaultdict
 import json
 import logging
 import os
-import re
-from collections import defaultdict
 from pathlib import Path
+import re
 
+from osgeo import ogr, osr
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -259,3 +260,89 @@ def write_json(data: dict, filepath: Path) -> None:
     """
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def export_aoi(bbox: list[float], output_dir: Path) -> None:
+    """
+    Export the Area of Interest (AOI) bounding box as a GeoJSON and Shapefile.
+
+    Args:
+        bbox (list[float]): Bounding box in [S, N, W, E] format (miny, maxy, minx, maxx).
+        output_dir (Path): Directory to save the exported files.
+    """
+    logger = logging.getLogger(__name__)
+
+    miny, maxy, minx, maxx = bbox
+
+    # Filename formatting
+    def format_coord(val, pos_dir, neg_dir):
+        direction = pos_dir if val >= 0 else neg_dir
+        return f"{abs(val):.2f}{direction}".replace(".", "p")
+
+    lat_s = format_coord(miny, 'N', 'S')
+    lat_n = format_coord(maxy, 'N', 'S')
+    lon_w = format_coord(minx, 'E', 'W')
+    lon_e = format_coord(maxx, 'E', 'W')
+    
+    name = f"AOI_{lat_s}_{lat_n}_{lon_w}_{lon_e}"
+    
+    # Create clean subdirectories
+    geojson_dir = output_dir / "geojson"
+    shp_dir = output_dir / "shp"
+    
+    geojson_dir.mkdir(parents=True, exist_ok=True)
+    shp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Export as GeoJSON into /geojson
+    geojson_path = geojson_dir / f"{name}.geojson"
+    geojson_data = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {"name": "Area of Interest"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]]
+            }
+        }]
+    }
+    with open(geojson_path, "w") as f:
+        json.dump(geojson_data, f, indent=2)
+
+    # Export as Shapefile into /shp using GDAL/OGR natively
+    shp_path = shp_dir / f"{name}.shp"
+    try:
+        driver = ogr.GetDriverByName("ESRI Shapefile")
+        if shp_path.exists():
+            driver.DeleteDataSource(str(shp_path))
+        
+        ds = driver.CreateDataSource(str(shp_path))
+        if ds is None:
+            logger.warning(f"Could not create shapefile at {shp_path}")
+            return
+
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+        
+        layer = ds.CreateLayer("AOI", srs, ogr.wkbPolygon)
+        
+        field_defn = ogr.FieldDefn("Name", ogr.OFTString)
+        field_defn.SetWidth(50)
+        layer.CreateField(field_defn)
+        
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetField("Name", "Area of Interest")
+        
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        for pt in [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)]:
+            ring.AddPoint(*pt)
+            
+        poly = ogr.Geometry(ogr.wkbPolygon)
+        poly.AddGeometry(ring)
+        
+        feature.SetGeometry(poly)
+        layer.CreateFeature(feature)
+        
+        feature, ds = None, None
+    except Exception as e:
+        logger.warning(f"Failed to export AOI shapefile: {e}")
