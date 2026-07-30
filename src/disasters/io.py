@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def parse_bbox_input(bbox_string: str) -> list[float] | str:
     """
-    Parses a string input (KML, GeoJSON, WKT, or 4 coordinates) 
+    Parses a string input (KML, GeoJSON, WKT, or 4 coordinates)
     into a standardized [South, North, West, East] bounding box list,
     OR returns the original string (WKT/filepath) to preserve precise AOI shapes downstream.
     """
@@ -20,40 +20,46 @@ def parse_bbox_input(bbox_string: str) -> list[float] | str:
 
     # Check if it's a geospatial file-type (KML, GeoJSON, SHP)
     if os.path.isfile(bbox_string):
-        logger.info(f"Detected file path for AOI. Preserving geometry from: {bbox_string}")
+        logger.info(
+            f"Detected file path for AOI. Preserving geometry from: {bbox_string}"
+        )
         return bbox_string
-        
+
     # Check if it's a WKT string
-    if bbox_string.upper().startswith(('POLYGON', 'MULTIPOLYGON', 'BBOX')):
+    if bbox_string.upper().startswith(("POLYGON", "MULTIPOLYGON", "BBOX")):
         logger.info("Detected WKT string. Preserving complex geometry...")
         return bbox_string
-        
+
     # Assume it's a raw coordinate string
     logger.info("Parsing raw coordinates...")
-    coords = [float(x) for x in bbox_string.replace(',', ' ').split()]
+    coords = [float(x) for x in bbox_string.replace(",", " ").split()]
     if len(coords) != 4:
-        raise ValueError("Bounding box must be a valid file, WKT, or 4 space/comma separated coordinates.")
-    
+        raise ValueError(
+            "Bounding box must be a valid file, WKT, or 4 space/comma separated coordinates."
+        )
+
     s, n, w, e = coords
-    
+
     swapped = False
-    
+
     # Auto-swap S/N if flipped
     if s > n:
         logger.warning("South coordinate is greater than North. Auto-swapping...")
         s, n = n, s
         swapped = True
-        
+
     # Auto-swap W/E if flipped (protect Antimeridian crossings)
     if w > e:
         # A true antimeridian box has a positive West, negative East, and a large numerical gap
         if w > 0 and e < 0 and (w - e) > 180:
-            logger.info("Detected valid bounding box crossing the Antimeridian. Preserving coordinates.")
+            logger.info(
+                "Detected valid bounding box crossing the Antimeridian. Preserving coordinates."
+            )
         else:
             logger.warning("West coordinate is greater than East. Auto-swapping...")
             w, e = e, w
             swapped = True
-            
+
     if swapped:
         logger.info(f"Corrected bounding box to [S, N, W, E]: {[s, n, w, e]}")
 

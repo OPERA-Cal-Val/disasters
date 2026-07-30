@@ -120,10 +120,14 @@ def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], s
         tuple: ([S, N, W, E], most_common_crs_proj4)
     """
     logger.info("Calculating spatial properties from local files...")
-    
+
     # Catch standard URLs and the explicit 'Filepath' column used by standalone slope-filter
-    url_cols = [c for c in df_opera.columns if str(c).startswith("Download URL") or c == "Filepath"]
-    
+    url_cols = [
+        c
+        for c in df_opera.columns
+        if str(c).startswith("Download URL") or c == "Filepath"
+    ]
+
     all_files = []
     for c in url_cols:
         all_files.extend(df_opera[c].dropna().tolist())
@@ -757,7 +761,9 @@ def run_mosaic_only(
                 geom, bounds, centroid = bbox_to_geometry(bbox_parsed, output_dir)
                 minx, miny, maxx, maxy = bounds
                 internal_bbox = [miny, maxy, minx, maxx]
-                logger.info(f"Extracted bounding envelope from user geometry: {internal_bbox}")
+                logger.info(
+                    f"Extracted bounding envelope from user geometry: {internal_bbox}"
+                )
             except Exception as e:
                 logger.error(f"Failed to parse user geometry: {e}")
                 return None
@@ -990,7 +996,9 @@ def run_mosaic_only(
     return output_dir
 
 
-def run_slope_filter_only(local_dir: Path, slope_threshold: float, output_dir: Path) -> Path | None:
+def run_slope_filter_only(
+    local_dir: Path, slope_threshold: float, output_dir: Path
+) -> Path | None:
     """
     Run a standalone pipeline to generate a slope mask and apply it to all valid rasters in the local directory.
 
@@ -1001,101 +1009,120 @@ def run_slope_filter_only(local_dir: Path, slope_threshold: float, output_dir: P
     Returns:
         Path | None: The output directory containing slope-filtered rasters, or None if the process failed.
     """
-    from .io import scan_local_directory, ensure_directory
-    from .mosaic import get_master_grid_props
-    from .filters import process_dem_and_slope, apply_slope_mask_to_raster
-    import pyproj
     import logging
-    
+
+    import pyproj
+
+    from .filters import apply_slope_mask_to_raster, process_dem_and_slope
+    from .io import ensure_directory, scan_local_directory
+    from .mosaic import get_master_grid_props
+
     logger = logging.getLogger(__name__)
-    
-    logger.info(f"[Pipeline] Running standalone SLOPE pipeline using data from: {local_dir}")
+
+    logger.info(
+        f"[Pipeline] Running standalone SLOPE pipeline using data from: {local_dir}"
+    )
 
     logger.info("[Pipeline] Authenticating with Earthdata...")
     try:
         authenticate()
         import earthaccess
-        
+
         # Verify the session actually established successfully
         if not earthaccess.auth.Auth().authenticated:
             raise RuntimeError("Earthdata login was unsuccessful.")
-            
+
     except Exception as e:
         logger.error(f"[Pipeline] Earthdata authentication failed: {e}")
-        logger.error("[Pipeline] Active authentication is strictly required to fetch missing DEMs. Exiting.")
+        logger.error(
+            "[Pipeline] Active authentication is strictly required to fetch missing DEMs. Exiting."
+        )
         return None
 
     # Gather metadata about the local OPERA files to calculate spatial properties and find valid rasters to process
     df_opera = scan_local_directory(local_dir)
 
     # Find all data files to mask (ignore DEMs, base slope outputs, and already-filtered files)
-    ignore_list = ['_B10_DEM', 'dem.tif', 'slope.tif', '_slope_filtered']
+    ignore_list = ["_B10_DEM", "dem.tif", "slope.tif", "_slope_filtered"]
     tifs_to_process = [
-        f for f in local_dir.glob("*.tif") 
+        f
+        for f in local_dir.glob("*.tif")
         if not any(ignore_str in f.name for ignore_str in ignore_list)
     ]
-    
+
     if not tifs_to_process:
-        logger.error("[Pipeline] No valid data TIFs found in the local directory to process.")
+        logger.error(
+            "[Pipeline] No valid data TIFs found in the local directory to process."
+        )
         return None
-        
+
     ensure_directory(output_dir)
 
     # Gather filepaths into a DataFrame for spatial calculations
-    df_spatial = pd.DataFrame({'Filepath': [str(p) for p in tifs_to_process]})
-    
+    df_spatial = pd.DataFrame({"Filepath": [str(p) for p in tifs_to_process]})
+
     # Calculate Master Grid for the Slope Generation
     auto_bbox, target_crs_proj4 = get_local_spatial_properties(df_spatial)
     crs_obj = pyproj.CRS.from_string(target_crs_proj4)
     target_res = 0.0002695 if crs_obj.is_geographic else 30
-    master_grid = get_master_grid_props(auto_bbox, target_crs_proj4, target_res=target_res)
-    
+    master_grid = get_master_grid_props(
+        auto_bbox, target_crs_proj4, target_res=target_res
+    )
+
     # If the dir is empty or only contains mosaics, seed it with spatial metadata
     if df_opera.empty:
         df_opera = df_spatial.copy()
-        df_opera['Dataset'] = 'CUSTOM_MOSAIC'
-        df_opera['Download URL WTR'] = None
+        df_opera["Dataset"] = "CUSTOM_MOSAIC"
+        df_opera["Download URL WTR"] = None
 
     # Generate the master dem.tif and slope.tif
     mask = process_dem_and_slope(
-        df=df_opera, 
-        master_grid=master_grid, 
-        threshold=slope_threshold, 
-        output_dir=output_dir, 
-        skip_existing=False
+        df=df_opera,
+        master_grid=master_grid,
+        threshold=slope_threshold,
+        output_dir=output_dir,
+        skip_existing=False,
     )
-    
+
     slope_tif_path = output_dir / "slope.tif"
     if mask is None or not slope_tif_path.exists():
-        logger.error("[Pipeline] Failed to generate base slope mask. Cannot proceed with filtering.")
+        logger.error(
+            "[Pipeline] Failed to generate base slope mask. Cannot proceed with filtering."
+        )
         return None
 
     # Apply the mask to every relevant file
-    logger.info(f"[Pipeline] Applying {slope_threshold}° slope filter to {len(tifs_to_process)} rasters...")
-    
+    logger.info(
+        f"[Pipeline] Applying {slope_threshold}° slope filter to {len(tifs_to_process)} rasters..."
+    )
+
     failed_files = []
-    
+
     for tif_path in tifs_to_process:
         # Create output filename clearly linked to the input
         out_name = f"{tif_path.stem}_{int(slope_threshold)}deg_slope_filtered.tif"
         out_path = output_dir / out_name
-        
+
         logger.info(f" -> Filtering {tif_path.name} to {out_name}...")
-        success = apply_slope_mask_to_raster(tif_path, slope_tif_path, slope_threshold, out_path)
-        
+        success = apply_slope_mask_to_raster(
+            tif_path, slope_tif_path, slope_threshold, out_path
+        )
+
         if not success:
             failed_files.append(tif_path.name)
-            
+
     # Report final status based on failures
     if failed_files:
         if len(failed_files) == len(tifs_to_process):
             logger.error("[Pipeline] All slope filtering tasks failed.")
             return None
         else:
-            logger.warning(f"[Pipeline] Slope filtering partially complete. {len(failed_files)} failures: {failed_files}")
+            logger.warning(
+                f"[Pipeline] Slope filtering partially complete. {len(failed_files)} failures: {failed_files}"
+            )
     else:
         logger.info("[Pipeline] Slope filtering complete.")
-        
+
     return output_dir
 
 

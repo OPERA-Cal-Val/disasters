@@ -36,8 +36,8 @@ def cli() -> None:
 
 @cli.command(name="run")
 @click.option(
-    "-b", 
-    "--bbox", 
+    "-b",
+    "--bbox",
     type=str,
     required=True,
     help=(
@@ -248,7 +248,9 @@ def run(
     try:
         bbox_arg = parse_bbox_input(bbox)
     except Exception as e:
-        raise click.BadParameter(f"Failed to parse bounding box: {e}", param_hint="--bbox")
+        raise click.BadParameter(
+            f"Failed to parse bounding box: {e}", param_hint="--bbox"
+        )
 
     # Parse zoom_bbox input, if provided
     zoom_bbox_arg = None
@@ -256,7 +258,9 @@ def run(
         try:
             zoom_bbox_arg = parse_bbox_input(zoom_bbox)
         except Exception as e:
-            raise click.BadParameter(f"Failed to parse zoom bounding box: {e}", param_hint="--zoom-bbox")
+            raise click.BadParameter(
+                f"Failed to parse zoom bounding box: {e}", param_hint="--zoom-bbox"
+            )
 
     # Build the PipelineConfig object
     cfg = PipelineConfig(
@@ -512,7 +516,7 @@ def download(
     "-ld",
     "--local-dir",
     type=click.Path(path_type=Path, file_okay=False, dir_okay=True, exists=True),
-    help="Path to a local directory containing pre-downloaded OPERA geotiffs. The mosaic will be built from these files."
+    help="Path to a local directory containing pre-downloaded OPERA geotiffs. The mosaic will be built from these files.",
 )
 @click.option(
     "-o",
@@ -540,19 +544,18 @@ def download(
     help="If set, tracks performance metrics during the mosaicking process.",
 )
 def mosaic(
-    local_dir: Optional[Path],
-    output_dir: Path,
-    bbox: Optional[str],
-    benchmark: bool
+    local_dir: Optional[Path], output_dir: Path, bbox: Optional[str], benchmark: bool
 ) -> None:
     """Stitch local OPERA granules into analysis-ready mosaics (No analysis/layouts)."""
-    
+
     # Enforce the required local_dir since we mapped two aliases to it
     if not local_dir:
-        raise click.UsageError("Missing option '-ld' / '--local-dir' (or '-i' / '--input-dir').")
+        raise click.UsageError(
+            "Missing option '-ld' / '--local-dir' (or '-i' / '--input-dir')."
+        )
 
-    from .pipeline import run_mosaic_only
     from .io import parse_bbox_input
+    from .pipeline import run_mosaic_only
 
     # Parse the input string into the [S, N, W, E] list
     parsed_bbox = None
@@ -560,20 +563,23 @@ def mosaic(
         try:
             parsed_bbox = parse_bbox_input(bbox)
         except Exception as e:
-            raise click.BadParameter(f"Failed to parse bounding box: {e}", param_hint="--bbox")
-    
+            raise click.BadParameter(
+                f"Failed to parse bounding box: {e}", param_hint="--bbox"
+            )
+
     logger.info("Starting mosaic pipeline...")
     output_path = run_mosaic_only(
         input_dir=local_dir,
         output_dir=output_dir,
         bbox=parsed_bbox,
-        benchmark=benchmark
+        benchmark=benchmark,
     )
 
     if output_path:
         logger.info(f"Mosaicking complete. Outputs saved to: {output_path}")
     else:
         logger.warning("Mosaic pipeline exited without producing outputs.")
+
 
 @cli.command(name="slope-filter")
 @click.option(
@@ -591,9 +597,9 @@ def mosaic(
     help="Path to a local directory containing pre-downloaded OPERA geotiffs.",
 )
 @click.option(
-    "-st", 
-    "--slope-threshold", 
-    type=float, 
+    "-st",
+    "--slope-threshold",
+    type=float,
     required=True,
     help="Slope threshold in degrees (0-100) to define the resulting mask.",
 )
@@ -604,28 +610,35 @@ def mosaic(
     required=True,
     help="Directory where the generated dem.tif and slope.tif will be saved.",
 )
-def slope_filter(local_dir: Optional[Path], slope_threshold: float, output_dir: Path) -> None:
+def slope_filter(
+    local_dir: Optional[Path], slope_threshold: float, output_dir: Path
+) -> None:
     """Generate a standalone DEM and slope mask from local OPERA products."""
-    
+
     if not local_dir:
-        raise click.UsageError("Missing option '-ld' / '--local-dir' (or '-i' / '--input-dir').")
+        raise click.UsageError(
+            "Missing option '-ld' / '--local-dir' (or '-i' / '--input-dir')."
+        )
 
     if not (0 <= slope_threshold <= 100):
-        raise click.BadParameter("Slope threshold must be between 0 and 100.", param_hint="--slope-threshold")
+        raise click.BadParameter(
+            "Slope threshold must be between 0 and 100.", param_hint="--slope-threshold"
+        )
 
     from .pipeline import run_slope_filter_only
-    
-    logger.info(f"Starting standalone slope filter pipeline for threshold > {slope_threshold} degrees...")
-    out_dir = run_slope_filter_only(
-        local_dir=local_dir,
-        slope_threshold=slope_threshold,
-        output_dir=output_dir
+
+    logger.info(
+        f"Starting standalone slope filter pipeline for threshold > {slope_threshold} degrees..."
     )
-    
+    out_dir = run_slope_filter_only(
+        local_dir=local_dir, slope_threshold=slope_threshold, output_dir=output_dir
+    )
+
     if out_dir:
         logger.info(f"Slope generation complete. Files saved to: {out_dir}")
     else:
         logger.warning("Slope pipeline exited without producing outputs.")
+
 
 if __name__ == "__main__":
     cli()

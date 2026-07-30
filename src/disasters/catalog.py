@@ -79,60 +79,67 @@ def read_opera_metadata(output_dir: Path) -> pd.DataFrame:
 
 def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
     """
-    Queries Earthdata for recent DSWx-HLS granules covering the bbox 
+    Queries Earthdata for recent DSWx-HLS granules covering the bbox
     and downloads ONLY their _B10_DEM.tif files to the local directory.
     """
     import datetime
+
     import earthaccess
-    
-    logger = logging.getLogger(__name__) 
-    
+
+    logger = logging.getLogger(__name__)
+
     # Look back 90 days to ensure we find a valid DEM
     days_back = 90
-    
-    # Fetch up to 50 granulesto ensure complete spatial coverage 
+
+    # Fetch up to 50 granulesto ensure complete spatial coverage
     max_granules = 50
 
-    logger.info(f"[DEM Fetcher] Missing local DEMs detected. Querying Earthdata for static topography (last {days_back} days)...")
-    
+    logger.info(
+        f"[DEM Fetcher] Missing local DEMs detected. Querying Earthdata for static topography (last {days_back} days)..."
+    )
+
     try:
         # Repackage our [S, N, W, E] bbox into Earthaccess format: (W, S, E, N)
         s, n, w, e = bbox
         cmr_bbox = (w, s, e, n)
-        
+
         # Query Earthdata for recent DSWx-HLS granules covering the bbox
         end_date = datetime.datetime.now(datetime.timezone.utc)
         start_date = end_date - datetime.timedelta(days=days_back)
-        
+
         results = earthaccess.search_data(
             short_name="OPERA_L3_DSWX-HLS_V1",
             bounding_box=cmr_bbox,
             temporal=(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")),
-            count=max_granules
+            count=max_granules,
         )
-        
+
         if not results:
-            logger.warning("[DEM Fetcher] No recent DSWx-HLS granules found for this BBOX.")
+            logger.warning(
+                "[DEM Fetcher] No recent DSWx-HLS granules found for this BBOX."
+            )
             return
-        
+
         # Filter to get only the _B10_DEM URLs
         dem_urls = []
         for granule in results:
             for link in granule.data_links():
                 if "_B10_DEM.tif" in link:
                     dem_urls.append(link)
-                    
+
         if not dem_urls:
             logger.warning("[DEM Fetcher] Found granules, but no _B10_DEM.tif links.")
             return
-        
+
         # Remove duplicates
         dem_urls = list(set(dem_urls))
-        
-        logger.info(f"[DEM Fetcher] Downloading {len(dem_urls)} DEM layers to {local_dir}...")
+
+        logger.info(
+            f"[DEM Fetcher] Downloading {len(dem_urls)} DEM layers to {local_dir}..."
+        )
         earthaccess.download(dem_urls, local_path=str(local_dir))
         logger.info("[DEM Fetcher] Topography download complete.")
-        
+
     except Exception as e:
         logger.error(f"[DEM Fetcher] Failed to fetch missing DEMs: {e}")
 

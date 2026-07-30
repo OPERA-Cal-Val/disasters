@@ -310,15 +310,15 @@ def generate_coastal_mask(bbox: list, master_grid: dict) -> Optional[xr.DataArra
 
 
 def process_dem_and_slope(
-    df: pd.DataFrame, 
-    master_grid: dict, 
-    threshold: float, 
-    output_dir: Path, 
-    skip_existing: bool = True
+    df: pd.DataFrame,
+    master_grid: dict,
+    threshold: float,
+    output_dir: Path,
+    skip_existing: bool = True,
 ) -> Optional[np.ndarray]:
     """
-    Fetches all DSWx-HLS Band 10 URLs (or downloads them if missing) and mosaics them 
-    into 'dem.tif' saved at output_dir. Calculates slope and returns a boolean mask 
+    Fetches all DSWx-HLS Band 10 URLs (or downloads them if missing) and mosaics them
+    into 'dem.tif' saved at output_dir. Calculates slope and returns a boolean mask
     (True where slope < threshold).
 
     Args:
@@ -335,8 +335,10 @@ def process_dem_and_slope(
     from .io import scan_local_directory
     from .pipeline import get_local_spatial_properties
 
-    logger.info(f"[Filters] Processing DEM and generating slope mask (> {threshold} degrees)...")
-    
+    logger.info(
+        f"[Filters] Processing DEM and generating slope mask (> {threshold} degrees)..."
+    )
+
     dem_output_path = output_dir / "dem.tif"
     slope_output_path = output_dir / "slope.tif"
 
@@ -363,41 +365,46 @@ def process_dem_and_slope(
 
     # Aggregate all local file paths and remote URLs from the DataFrame
     all_paths = []
-    if 'Filepath' in df.columns:
-        all_paths.extend(df['Filepath'].dropna().astype(str).tolist())
+    if "Filepath" in df.columns:
+        all_paths.extend(df["Filepath"].dropna().astype(str).tolist())
     for col in df.columns:
-        if str(col).startswith('Download URL'):
+        if str(col).startswith("Download URL"):
             all_paths.extend(df[col].dropna().astype(str).tolist())
 
-    has_dem_files = any('_B10_DEM' in str(p) for p in all_paths)
-    has_dswx_cloud = 'Dataset' in df.columns and df['Dataset'].str.contains('DSWx-HLS', na=False).any()
+    has_dem_files = any("_B10_DEM" in str(p) for p in all_paths)
+    has_dswx_cloud = (
+        "Dataset" in df.columns
+        and df["Dataset"].str.contains("DSWx-HLS", na=False).any()
+    )
 
     # If there are no cloud DSWx links, verify and fetch complete DEM coverage for the AOI
     if not has_dswx_cloud:
-        logger.info("[Filters] Verifying continuous DEM coverage for spatial footprint...")
-        
+        logger.info(
+            "[Filters] Verifying continuous DEM coverage for spatial footprint..."
+        )
+
         auto_bbox, _ = get_local_spatial_properties(df)
-        
+
         # Purge any stale DEMs from the output directory from previous aborted runs
         for stale_dem in output_dir.glob("*_B10_DEM*.tif"):
             try:
                 stale_dem.unlink()
             except Exception:
                 pass
-        
+
         # Query CMR for missing DEMs and download them to the OUTPUT directory
         fetch_missing_dems(auto_bbox, output_dir)
-        
+
         # Inject newly downloaded DEMs from the output directory into our path list
         new_dems = [str(p) for p in output_dir.glob("*_B10_DEM*.tif")]
-        
+
         if new_dems:
             # Use the freshly fetched DEMs
             for dem_path in new_dems:
                 if dem_path not in all_paths:
                     all_paths.append(dem_path)
         else:
-            # Fallback to grab any existing DEMs from the local input directory 
+            # Fallback to grab any existing DEMs from the local input directory
             # ONLY if the remote fetch failed or returned nothing
             if all_paths:
                 local_dir = Path(all_paths[0]).parent
@@ -405,36 +412,44 @@ def process_dem_and_slope(
                 for dem_path in existing_dems:
                     if dem_path not in all_paths:
                         all_paths.append(dem_path)
-                    
+
         # Verify we actually have DEMs to process
-        has_dem_files = any('_B10_DEM' in str(p) for p in all_paths)
+        has_dem_files = any("_B10_DEM" in str(p) for p in all_paths)
         if not has_dem_files:
-            logger.warning("[Filters] Earthdata fetch completed, but no DEMs were found on disk.")
+            logger.warning(
+                "[Filters] Earthdata fetch completed, but no DEMs were found on disk."
+            )
             return None
 
     # Gather the complete list of DEM paths for GDAL processing
-    explicit_dems = [p for p in all_paths if '_B10_DEM' in str(p)]
+    explicit_dems = [p for p in all_paths if "_B10_DEM" in str(p)]
 
     dem_urls = []
     if explicit_dems:
         dem_urls = explicit_dems
     else:
         # Safely deduce DEM URLs in cloud mode without key errors
-        dswx_rows = df[df['Dataset'] == 'OPERA_L3_DSWX-HLS_V1'] if 'Dataset' in df.columns else pd.DataFrame()
-        if 'Download URL WTR' in dswx_rows.columns:
-            for url in dswx_rows['Download URL WTR'].dropna().unique():
-                if '_B01_WTR' in url:
-                    if url.startswith('http') and not url.startswith('/vsi'):
-                        dem_url = url.replace('_B01_WTR', '_B10_DEM')
-                        dem_urls.append(f'/vsicurl/{dem_url}')
+        dswx_rows = (
+            df[df["Dataset"] == "OPERA_L3_DSWX-HLS_V1"]
+            if "Dataset" in df.columns
+            else pd.DataFrame()
+        )
+        if "Download URL WTR" in dswx_rows.columns:
+            for url in dswx_rows["Download URL WTR"].dropna().unique():
+                if "_B01_WTR" in url:
+                    if url.startswith("http") and not url.startswith("/vsi"):
+                        dem_url = url.replace("_B01_WTR", "_B10_DEM")
+                        dem_urls.append(f"/vsicurl/{dem_url}")
                     else:
-                        local_dem_path = url.replace('_B01_WTR', '_B10_DEM')
+                        local_dem_path = url.replace("_B01_WTR", "_B10_DEM")
                         dem_urls.append(local_dem_path)
-                    
+
     dem_urls = list(set(dem_urls))
-    
+
     if not dem_urls:
-        logger.warning("[Filters] Failed to identify or fetch any DEM URLs. Skipping slope masking.")
+        logger.warning(
+            "[Filters] Failed to identify or fetch any DEM URLs. Skipping slope masking."
+        )
         return None
 
     # Extract Master Grid Properties
@@ -498,15 +513,19 @@ def process_dem_and_slope(
         return None
 
 
-def apply_slope_mask_to_raster(target_tif: Path, slope_tif: Path, threshold: float, output_tif: Path) -> bool:
+def apply_slope_mask_to_raster(
+    target_tif: Path, slope_tif: Path, threshold: float, output_tif: Path
+) -> bool:
     """
-    Dynamically reprojects the slope mask to match the target raster's grid, 
+    Dynamically reprojects the slope mask to match the target raster's grid,
     applies the mask, and saves the filtered output safely using a subprocess.
     """
     import logging
+
     import numpy as np
     import rasterio
-    from rasterio.warp import reproject, Resampling
+    from rasterio.warp import Resampling, reproject
+
     from .mosaic import array_to_image, get_image_colormap
 
     logger = logging.getLogger(__name__)
@@ -519,7 +538,7 @@ def apply_slope_mask_to_raster(target_tif: Path, slope_tif: Path, threshold: flo
             target_transform = src.transform
             nodata_val = src.nodata if src.nodata is not None else -9999
             target_dtype = src.dtypes[0]  # Grab native dtype (e.g., uint8)
-            
+
         # Extract colormap safely if it exists (so we don't lose colors)
         colormap = None
         try:
@@ -537,14 +556,14 @@ def apply_slope_mask_to_raster(target_tif: Path, slope_tif: Path, threshold: flo
                 src_crs=slope_src.crs,
                 dst_transform=target_transform,
                 dst_crs=target_crs,
-                resampling=Resampling.bilinear
+                resampling=Resampling.bilinear,
             )
 
         # Apply mask: pixels with slope < threshold (or nodata) set to nodata_val
         filtered_arr = np.where(
-            (aligned_slope_arr < threshold) | (aligned_slope_arr == -9999), 
-            nodata_val, 
-            target_arr
+            (aligned_slope_arr < threshold) | (aligned_slope_arr == -9999),
+            nodata_val,
+            target_arr,
         ).astype(target_dtype)
 
         # Write using the subprocess-isolated array_to_image to prevent GDAL heap corruption
@@ -554,9 +573,9 @@ def apply_slope_mask_to_raster(target_tif: Path, slope_tif: Path, threshold: flo
             source=str(target_tif),
             driver="COG",
             colormap=colormap,
-            nodata=nodata_val
+            nodata=nodata_val,
         )
-        
+
         return True
 
     except Exception as e:
