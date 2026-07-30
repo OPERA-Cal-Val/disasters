@@ -1014,8 +1014,16 @@ def run_slope_filter_only(local_dir: Path, slope_threshold: float, output_dir: P
     logger.info("[Pipeline] Authenticating with Earthdata...")
     try:
         authenticate()
+        import earthaccess
+        
+        # Verify the session actually established successfully
+        if not earthaccess.auth.Auth().authenticated:
+            raise RuntimeError("Earthdata login was unsuccessful.")
+            
     except Exception as e:
-        logger.warning(f"[Pipeline] Earthdata authentication failed or skipped: {e}")
+        logger.error(f"[Pipeline] Earthdata authentication failed: {e}")
+        logger.error("[Pipeline] Active authentication is strictly required to fetch missing DEMs. Exiting.")
+        return None
 
     # Gather metadata about the local OPERA files to calculate spatial properties and find valid rasters to process
     df_opera = scan_local_directory(local_dir)
