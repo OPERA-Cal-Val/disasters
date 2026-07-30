@@ -281,7 +281,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     # Convert WKT/File to an SNWE list for internal mosaicking logic
     if isinstance(config.bbox, str):
         try:
-            from utils.utils import bbox_to_geometry, bbox_type
+            from next_pass.utils.utils import bbox_to_geometry, bbox_type
 
             bbox_parsed = bbox_type([config.bbox])
             geom, bounds, centroid = bbox_to_geometry(bbox_parsed, config.output_dir)
@@ -751,14 +751,15 @@ def run_mosaic_only(
     if bbox is not None:
         if isinstance(bbox, str):
             try:
-                from shapely import wkt
+                from next_pass.utils.utils import bbox_to_geometry, bbox_type
 
-                geom = wkt.loads(bbox)
-                b_minx, b_miny, b_maxx, b_maxy = geom.bounds
-                internal_bbox = [b_miny, b_maxy, b_minx, b_maxx]
-                logger.info(f"Using user-provided WKT bounds: {internal_bbox}")
+                bbox_parsed = bbox_type([bbox])
+                geom, bounds, centroid = bbox_to_geometry(bbox_parsed, output_dir)
+                minx, miny, maxx, maxy = bounds
+                internal_bbox = [miny, maxy, minx, maxx]
+                logger.info(f"Extracted bounding envelope from user geometry: {internal_bbox}")
             except Exception as e:
-                logger.error(f"Failed to parse user WKT: {e}")
+                logger.error(f"Failed to parse user geometry: {e}")
                 return None
         else:
             internal_bbox = list(bbox)
