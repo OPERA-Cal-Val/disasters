@@ -624,13 +624,17 @@ def merge_first_valid(
     new_nodata=None,
     index=None,
     roff=None,
-    coff=None
+    coff=None,
 ):
     """
     Element-wise merge method for continuous integer imagery.
     """
     # Fall back to HLS standard -9999 if nodata isn't explicitly passed by the merge engine
-    if old_nodata is None or hasattr(old_nodata, "shape") or isinstance(old_nodata, (np.ndarray, list)):
+    if (
+        old_nodata is None
+        or hasattr(old_nodata, "shape")
+        or isinstance(old_nodata, (np.ndarray, list))
+    ):
         nodata = -9999
     else:
         nodata = old_nodata
@@ -641,7 +645,12 @@ def merge_first_valid(
     return old_data
 
 
-def mosaic_opera(DS: list, product: str = "OPERA_L3_DSWX-S1_V1", layer: str = None, merge_args: dict = {}) -> Tuple[xr.DataArray, Optional[dict], float]:
+def mosaic_opera(
+    DS: list,
+    product: str = "OPERA_L3_DSWX-S1_V1",
+    layer: str = None,
+    merge_args: dict = {},
+) -> Tuple[xr.DataArray, Optional[dict], float]:
     """
     Mosaics a list of OPERA product granules into a single image (in memory).
 

@@ -1006,7 +1006,11 @@ def make_layout(
             f"A pixel is marked as flooded if water was detected in any valid observation during this period. "
             f"Derived from {short_name} data."
         )
-        data_source = "NASA Harmonized Landsat and Sentinel-2" if "HLS" in short_name else "Copernicus Sentinel-1"
+        data_source = (
+            "NASA Harmonized Landsat and Sentinel-2"
+            if "HLS" in short_name
+            else "Copernicus Sentinel-1"
+        )
 
     elif short_name == "OPERA_L3_DSWX-S1_V1" and layer != "CONF":
         subtitle = "OPERA Dynamic Surface Water eXtent from Sentinel-1 (DSWx-S1)"
@@ -1036,7 +1040,11 @@ def make_layout(
                 "product from Harmonized Landsat and Sentinel-2 data."
                 "This map depicts regions of full surface water and inundated surface water. "
             )
-        data_source = "NASA Harmonized Landsat and Sentinel-2" if "HLS" in short_name else "Copernicus Sentinel-1"
+        data_source = (
+            "NASA Harmonized Landsat and Sentinel-2"
+            if "HLS" in short_name
+            else "Copernicus Sentinel-1"
+        )
 
     elif layer == "CONF":
         product_label = "DSWx-HLS" if "HLS" in short_name else "DSWx-S1"
