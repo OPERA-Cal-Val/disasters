@@ -285,7 +285,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     # Convert WKT/File to an SNWE list for internal mosaicking logic
     if isinstance(config.bbox, str):
         try:
-            from next_pass.utils.utils import bbox_to_geometry, bbox_type
+            from utils.utils import bbox_to_geometry, bbox_type
 
             bbox_parsed = bbox_type([config.bbox])
             geom, bounds, centroid = bbox_to_geometry(bbox_parsed, config.output_dir)
@@ -755,7 +755,7 @@ def run_mosaic_only(
     if bbox is not None:
         if isinstance(bbox, str):
             try:
-                from next_pass.utils.utils import bbox_to_geometry, bbox_type
+                from utils.utils import bbox_to_geometry, bbox_type
 
                 bbox_parsed = bbox_type([bbox])
                 geom, bounds, centroid = bbox_to_geometry(bbox_parsed, output_dir)
@@ -1043,11 +1043,9 @@ def run_slope_filter_only(
     df_opera = scan_local_directory(local_dir)
 
     # Find all data files to mask (ignore DEMs, base slope outputs, and already-filtered files)
-    ignore_list = ["_B10_DEM", "dem.tif", "slope.tif", "_slope_filtered"]
+    ignore_suffixes = ("_B10_DEM.tif", "dem.tif", "slope.tif", "_slope_filtered.tif")
     tifs_to_process = [
-        f
-        for f in local_dir.glob("*.tif")
-        if not any(ignore_str in f.name for ignore_str in ignore_list)
+        f for f in local_dir.rglob("*.tif") if not f.name.endswith(ignore_suffixes)
     ]
 
     if not tifs_to_process:
@@ -1100,7 +1098,8 @@ def run_slope_filter_only(
 
     for tif_path in tifs_to_process:
         # Create output filename clearly linked to the input
-        out_name = f"{tif_path.stem}_{int(slope_threshold)}deg_slope_filtered.tif"
+        threshold_str = str(slope_threshold).replace(".", "p")
+        out_name = f"{tif_path.stem}_{threshold_str}deg_slope_filtered.tif"
         out_path = output_dir / out_name
 
         logger.info(f" -> Filtering {tif_path.name} to {out_name}...")
