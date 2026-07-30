@@ -109,66 +109,62 @@ class PipelineConfig:
     satellites: list[str] | None = None
 
 
-def get_local_spatial_properties(df: pd.DataFrame) -> tuple[list[float], str]:
+def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], str]:
     """
     Calculates the global bounding box [S, N, W, E] and most common CRS
     from a local DataFrame of OPERA products by reading their headers.
 
     Args:
-        df (pd.DataFrame): DataFrame containing metadata about local OPERA products, 
-                                 including columns with file paths.
+        df_opera (pd.DataFrame): DataFrame containing OPERA metadata with download URLs.
     Returns:
-        tuple[list[float], str]: A tuple containing the bounding box as [S, N, W, E] and the most common CRS in PROJ4 string format.
+        tuple: ([S, N, W, E], most_common_crs_proj4)
     """
-    logger = logging.getLogger(__name__)
     logger.info("Calculating spatial properties from local files...")
     
-    min_s, max_n, min_w, max_e = 90.0, -90.0, 180.0, -180.0
-    target_crs_wkt = None
-    valid_files = 0
+    # Catch standard URLs and the explicit 'Filepath' column used by standalone slope-filter
+    url_cols = [c for c in df_opera.columns if str(c).startswith("Download URL") or c == "Filepath"]
     
-    for _, row in df.iterrows():
-        # Try to get the explicit Filepath (used by standalone slope filter)
-        filepath = row.get('Filepath')
-        
-        # If no Filepath column, grab the first valid 'Download URL' column
-        if pd.isna(filepath):
-            for col in df.columns:
-                if str(col).startswith("Download URL") and pd.notna(row[col]):
-                    filepath = row[col]
-                    break
-                    
-        # If we still don't have a file, skip to the next row
-        if pd.isna(filepath):
-            continue
-            
+    all_files = []
+    for c in url_cols:
+        all_files.extend(df_opera[c].dropna().tolist())
+    all_files = list(set(all_files))  # Unique files only
+
+    minx, miny, maxx, maxy = float("inf"), float("inf"), float("-inf"), float("-inf")
+    crs_counter = Counter()
+
+    for f in all_files:
         try:
-            # Extract CRS and bounds using rasterio
-            with rasterio.open(filepath) as src:
-                if src.crs is None:
-                    logger.warning(f"[Spatial Calc] File {filepath} has no CRS metadata! Skipping...")
-                    continue
-                    
-                if not target_crs_wkt:
-                    target_crs_wkt = src.crs.to_wkt()
-                
-                # rasterio bounds are (west, south, east, north)
-                bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
-                
-                min_w = min(min_w, bounds[0])
-                min_s = min(min_s, bounds[1])
-                max_e = max(max_e, bounds[2])
-                max_n = max(max_n, bounds[3])
-                
-                valid_files += 1
-                
+            with rasterio.open(f) as src:
+                bounds = src.bounds
+                crs = src.crs
+
+                if crs is not None:
+                    crs_counter[crs.to_string()] += 1
+
+                # Transform to EPSG:4326 to match S, N, W, E expected format
+                if crs and crs.to_string() != "EPSG:4326":
+                    left, bottom, right, top = transform_bounds(
+                        crs, "EPSG:4326", *bounds
+                    )
+                else:
+                    left, bottom, right, top = bounds
+
+                minx = min(minx, left)
+                miny = min(miny, bottom)
+                maxx = max(maxx, right)
+                maxy = max(maxy, top)
         except Exception as e:
-            logger.error(f"[Spatial Calc] Failed to read {filepath}. Reason: {e}")
-            
-    if valid_files == 0:
-        raise RuntimeError("Could not calculate bounding box from local files. Check the errors above to see why rasterio rejected the files!")
-        
-    return [min_s, max_n, min_w, max_e], target_crs_wkt
+            logger.warning(f"Could not read spatial properties from {f}: {e}")
+
+    if minx == float("inf"):
+        raise RuntimeError("Could not calculate bounding box from local files.")
+
+    most_common_crs = crs_counter.most_common(1)[0][0]
+
+    logger.info(f"Local Master CRS determined: {most_common_crs}")
+
+    # Return [S, N, W, E] and the CRS
+    return [miny, maxy, minx, maxx], most_common_crs
 
 
 def run_pipeline(config: PipelineConfig) -> Path | None:
