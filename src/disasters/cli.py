@@ -64,6 +64,14 @@ def cli() -> None:
     help="Directory where results and metadata will be saved.",
 )
 @click.option(
+    "-i",
+    "--input-dir",
+    "local_dir",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
+    hidden=True,
+    help="Deprecated alias for --local-dir.",
+)
+@click.option(
     "-ld",
     "--local-dir",
     type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
@@ -493,17 +501,17 @@ def download(
 
 @cli.command(name="mosaic")
 @click.option(
-    "-b",
-    "--bbox",
-    type=str,
-    required=False,
-    help="Bounding box (4 coords, WKT, or path to KML/GeoJSON). Limits mosaic extent.",
+    "-i",
+    "--input-dir",
+    "local_dir",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True, exists=True),
+    hidden=True,
+    help="Deprecated alias for --local-dir.",
 )
 @click.option(
     "-ld",
     "--local-dir",
     type=click.Path(path_type=Path, file_okay=False, dir_okay=True, exists=True),
-    required=True,
     help="Path to a local directory containing pre-downloaded OPERA geotiffs. The mosaic will be built from these files."
 )
 @click.option(
@@ -532,13 +540,19 @@ def download(
     help="If set, tracks performance metrics during the mosaicking process.",
 )
 def mosaic(
-    bbox: Optional[str],
-    local_dir: Path,
+    local_dir: Optional[Path],
     output_dir: Path,
+    bbox: Optional[str],
     benchmark: bool
 ) -> None:
     """Stitch local OPERA granules into analysis-ready mosaics (No analysis/layouts)."""
+    
+    # Enforce the required local_dir since we mapped two aliases to it
+    if not local_dir:
+        raise click.UsageError("Missing option '-ld' / '--local-dir' (or '-i' / '--input-dir').")
+
     from .pipeline import run_mosaic_only
+    from .io import parse_bbox_input
 
     # Parse the input string into the [S, N, W, E] list
     parsed_bbox = None
@@ -563,10 +577,17 @@ def mosaic(
 
 @cli.command(name="slope-filter")
 @click.option(
+    "-i",
+    "--input-dir",
+    "local_dir",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True, exists=True),
+    hidden=True,
+    help="Deprecated alias for --local-dir.",
+)
+@click.option(
     "-ld",
     "--local-dir",
     type=click.Path(path_type=Path, file_okay=False, dir_okay=True, exists=True),
-    required=True,
     help="Path to a local directory containing pre-downloaded OPERA geotiffs.",
 )
 @click.option(
@@ -583,9 +604,12 @@ def mosaic(
     required=True,
     help="Directory where the generated dem.tif and slope.tif will be saved.",
 )
-def slope_filter(local_dir: Path, slope_threshold: float, output_dir: Path) -> None:
+def slope_filter(local_dir: Optional[Path], slope_threshold: float, output_dir: Path) -> None:
     """Generate a standalone DEM and slope mask from local OPERA products."""
     
+    if not local_dir:
+        raise click.UsageError("Missing option '-ld' / '--local-dir' (or '-i' / '--input-dir').")
+
     if not (0 <= slope_threshold <= 100):
         raise click.BadParameter("Slope threshold must be between 0 and 100.", param_hint="--slope-threshold")
 
@@ -602,7 +626,6 @@ def slope_filter(local_dir: Path, slope_threshold: float, output_dir: Path) -> N
         logger.info(f"Slope generation complete. Files saved to: {out_dir}")
     else:
         logger.warning("Slope pipeline exited without producing outputs.")
-
 
 if __name__ == "__main__":
     cli()
