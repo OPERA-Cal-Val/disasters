@@ -314,7 +314,7 @@ def process_dem_and_slope(
     master_grid: dict,
     threshold: float,
     output_dir: Path,
-    skip_existing: bool = True,
+    skip_existing: bool = False,
 ) -> Optional[np.ndarray]:
     """
     Fetches all DSWx-HLS Band 10 URLs (or downloads them if missing) and mosaics them
@@ -332,7 +332,6 @@ def process_dem_and_slope(
         np.ndarray: Mask indicating areas where slope is below threshold.
     """
     from .catalog import fetch_missing_dems
-    from .io import scan_local_directory
     from .pipeline import get_local_spatial_properties
 
     logger.info(
@@ -351,6 +350,24 @@ def process_dem_and_slope(
             import rasterio
 
             with rasterio.open(slope_output_path) as src:
+                expected_shape = tuple(master_grid["shape"])
+                expected_crs = master_grid.get("dst_crs")
+                expected_transform = master_grid["transform"]
+
+                if src.shape != expected_shape:
+                    raise ValueError(
+                        f"existing slope shape {src.shape} does not match {expected_shape}"
+                    )
+                if (
+                    expected_crs is not None
+                    and src.crs != rasterio.crs.CRS.from_user_input(expected_crs)
+                ):
+                    raise ValueError("existing slope CRS does not match master grid")
+                if not np.allclose(tuple(src.transform), tuple(expected_transform)):
+                    raise ValueError(
+                        "existing slope transform does not match master grid"
+                    )
+
                 slope_arr = src.read(1)
 
             mask = (slope_arr < threshold) & (slope_arr != -9999)
@@ -371,14 +388,17 @@ def process_dem_and_slope(
         if str(col).startswith("Download URL"):
             all_paths.extend(df[col].dropna().astype(str).tolist())
 
-    has_dem_files = any("_B10_DEM" in str(p) for p in all_paths)
-    has_dswx_cloud = (
+    explicit_dems = [p for p in all_paths if "_B10_DEM" in str(p)]
+    has_dswx_rows = (
         "Dataset" in df.columns
-        and df["Dataset"].str.contains("DSWx-HLS", na=False).any()
+        and df["Dataset"].astype(str).str.contains("DSWx-HLS", na=False).any()
+    )
+    has_remote_dswx = has_dswx_rows and any(
+        str(p).startswith(("http", "/vsi")) for p in all_paths
     )
 
-    # If there are no cloud DSWx links, verify and fetch complete DEM coverage for the AOI
-    if not has_dswx_cloud:
+    # Local non-DEM inputs need a real DEM fetch. Cloud DSWx rows can derive B10 URLs below.
+    if not explicit_dems and not has_remote_dswx:
         logger.info(
             "[Filters] Verifying continuous DEM coverage for spatial footprint..."
         )
@@ -406,23 +426,23 @@ def process_dem_and_slope(
         else:
             # Fallback to grab any existing DEMs from the local input directory
             # ONLY if the remote fetch failed or returned nothing
-            if all_paths:
-                local_dir = Path(all_paths[0]).parent
-                existing_dems = [str(p) for p in local_dir.glob("*_B10_DEM*.tif")]
-                for dem_path in existing_dems:
+            local_dirs = {
+                Path(p).parent
+                for p in all_paths
+                if not str(p).startswith(("http", "/vsi")) and Path(p).exists()
+            }
+            for local_dir in local_dirs:
+                for dem_path in (str(p) for p in local_dir.glob("*_B10_DEM*.tif")):
                     if dem_path not in all_paths:
                         all_paths.append(dem_path)
 
         # Verify we actually have DEMs to process
-        has_dem_files = any("_B10_DEM" in str(p) for p in all_paths)
-        if not has_dem_files:
+        explicit_dems = [p for p in all_paths if "_B10_DEM" in str(p)]
+        if not explicit_dems:
             logger.warning(
                 "[Filters] Earthdata fetch completed, but no DEMs were found on disk."
             )
             return None
-
-    # Gather the complete list of DEM paths for GDAL processing
-    explicit_dems = [p for p in all_paths if "_B10_DEM" in str(p)]
 
     dem_urls = []
     if explicit_dems:
@@ -530,14 +550,30 @@ def apply_slope_mask_to_raster(
 
     logger = logging.getLogger(__name__)
 
+    def _nodata_for_dtype(dtype_name: str, source_nodata: float | int | None):
+        dtype = np.dtype(dtype_name)
+        if source_nodata is not None:
+            if np.issubdtype(dtype, np.integer):
+                info = np.iinfo(dtype)
+                if info.min <= source_nodata <= info.max:
+                    return int(source_nodata)
+            else:
+                return float(source_nodata)
+
+        if np.issubdtype(dtype, np.unsignedinteger):
+            return int(np.iinfo(dtype).max)
+        if np.issubdtype(dtype, np.signedinteger):
+            return int(np.iinfo(dtype).min)
+        return -9999.0
+
     try:
         # Read target dataset and its native data type
         with rasterio.open(target_tif) as src:
             target_arr = src.read(1)
             target_crs = src.crs
             target_transform = src.transform
-            nodata_val = src.nodata if src.nodata is not None else -9999
             target_dtype = src.dtypes[0]  # Grab native dtype (e.g., uint8)
+            nodata_val = _nodata_for_dtype(target_dtype, src.nodata)
 
         # Extract colormap safely if it exists (so we don't lose colors)
         colormap = None
@@ -548,7 +584,10 @@ def apply_slope_mask_to_raster(
 
         # Read and reproject slope mask to match target
         with rasterio.open(slope_tif) as slope_src:
-            aligned_slope_arr = np.empty_like(target_arr, dtype=np.float32)
+            slope_nodata = slope_src.nodata if slope_src.nodata is not None else -9999
+            aligned_slope_arr = np.full(
+                target_arr.shape, slope_nodata, dtype=np.float32
+            )
             reproject(
                 source=rasterio.band(slope_src, 1),
                 destination=aligned_slope_arr,
@@ -556,12 +595,14 @@ def apply_slope_mask_to_raster(
                 src_crs=slope_src.crs,
                 dst_transform=target_transform,
                 dst_crs=target_crs,
+                src_nodata=slope_nodata,
+                dst_nodata=slope_nodata,
                 resampling=Resampling.bilinear,
             )
 
         # Apply mask: pixels with slope < threshold (or nodata) set to nodata_val
         filtered_arr = np.where(
-            (aligned_slope_arr < threshold) | (aligned_slope_arr == -9999),
+            (aligned_slope_arr < threshold) | (aligned_slope_arr == slope_nodata),
             nodata_val,
             target_arr,
         ).astype(target_dtype)
