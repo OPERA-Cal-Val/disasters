@@ -34,7 +34,30 @@ def parse_bbox_input(bbox_string: str) -> list[float] | str:
     if len(coords) != 4:
         raise ValueError("Bounding box must be a valid file, WKT, or 4 space/comma separated coordinates.")
     
-    return coords
+    s, n, w, e = coords
+    
+    swapped = False
+    
+    # Auto-swap S/N if flipped
+    if s > n:
+        logger.warning("South coordinate is greater than North. Auto-swapping...")
+        s, n = n, s
+        swapped = True
+        
+    # Auto-swap W/E if flipped (protect Antimeridian crossings)
+    if w > e:
+        # A true antimeridian box has a positive West, negative East, and a large numerical gap
+        if w > 0 and e < 0 and (w - e) > 180:
+            logger.info("Detected valid bounding box crossing the Antimeridian. Preserving coordinates.")
+        else:
+            logger.warning("West coordinate is greater than East. Auto-swapping...")
+            w, e = e, w
+            swapped = True
+            
+    if swapped:
+        logger.info(f"Corrected bounding box to [S, N, W, E]: {[s, n, w, e]}")
+
+    return [s, n, w, e]
 
 
 def ensure_directory(output_dir: Path) -> Path:
