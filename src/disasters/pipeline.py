@@ -1068,15 +1068,29 @@ def run_slope_filter_only(local_dir: Path, slope_threshold: float, output_dir: P
     # Apply the mask to every relevant file
     logger.info(f"[Pipeline] Applying {slope_threshold}° slope filter to {len(tifs_to_process)} rasters...")
     
+    failed_files = []
+    
     for tif_path in tifs_to_process:
         # Create output filename clearly linked to the input
         out_name = f"{tif_path.stem}_{int(slope_threshold)}deg_slope_filtered.tif"
         out_path = output_dir / out_name
         
         logger.info(f" -> Filtering {tif_path.name} to {out_name}...")
-        apply_slope_mask_to_raster(tif_path, slope_tif_path, slope_threshold, out_path)
+        success = apply_slope_mask_to_raster(tif_path, slope_tif_path, slope_threshold, out_path)
         
-    logger.info("[Pipeline] Slope filtering complete.")
+        if not success:
+            failed_files.append(tif_path.name)
+            
+    # Report final status based on failures
+    if failed_files:
+        if len(failed_files) == len(tifs_to_process):
+            logger.error("[Pipeline] All slope filtering tasks failed.")
+            return None
+        else:
+            logger.warning(f"[Pipeline] Slope filtering partially complete. {len(failed_files)} failures: {failed_files}")
+    else:
+        logger.info("[Pipeline] Slope filtering complete.")
+        
     return output_dir
 
 

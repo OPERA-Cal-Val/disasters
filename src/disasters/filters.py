@@ -487,7 +487,7 @@ def process_dem_and_slope(
         return None
 
 
-def apply_slope_mask_to_raster(target_tif: Path, slope_tif: Path, threshold: float, output_tif: Path):
+def apply_slope_mask_to_raster(target_tif: Path, slope_tif: Path, threshold: float, output_tif: Path) -> bool:
     """
     Dynamically reprojects the slope mask to match the target raster's grid, 
     applies the mask, and saves the filtered output safely using a subprocess.
@@ -545,6 +545,9 @@ def apply_slope_mask_to_raster(target_tif: Path, slope_tif: Path, threshold: flo
             colormap=colormap,
             nodata=nodata_val
         )
+        
+        return True
 
     except Exception as e:
         logger.error(f"Failed to apply slope mask to {target_tif.name}: {e}")
+        return False
