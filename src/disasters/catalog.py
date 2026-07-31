@@ -83,7 +83,7 @@ def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
     and downloads ONLY their _B10_DEM.tif files to the local directory.
     """
     import datetime
-
+    import re
     import earthaccess
 
     logger = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
     # Look back 90 days to ensure we find a valid DEM
     days_back = 90
 
-    # Fetch up to 50 granulesto ensure complete spatial coverage
+    # Fetch up to 50 granules to ensure complete spatial coverage
     max_granules = 50
 
     logger.info(
@@ -120,22 +120,31 @@ def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
             )
             return
 
-        # Filter to get only the _B10_DEM URLs
+        # Filter to get only the _B10_DEM URLs, deduplicating by MGRS Tile ID
         dem_urls = []
+        seen_tiles = set()
+        
         for granule in results:
             for link in granule.data_links():
                 if "_B10_DEM.tif" in link:
-                    dem_urls.append(link)
+                    # Extract the MGRS tile ID (e.g., T22JCP)
+                    match = re.search(r'_(T\d{2}[A-Z]{3})_', link)
+                    if match:
+                        tile_id = match.group(1)
+                        if tile_id not in seen_tiles:
+                            seen_tiles.add(tile_id)
+                            dem_urls.append(link)
+                    else:
+                        # Fallback if the regex fails to find a tile ID
+                        if link not in dem_urls:
+                            dem_urls.append(link)
 
         if not dem_urls:
             logger.warning("[DEM Fetcher] Found granules, but no _B10_DEM.tif links.")
             return
 
-        # Remove duplicates
-        dem_urls = list(set(dem_urls))
-
         logger.info(
-            f"[DEM Fetcher] Downloading {len(dem_urls)} DEM layers to {local_dir}..."
+            f"[DEM Fetcher] Downloading {len(dem_urls)} unique DEM layers to {local_dir}..."
         )
         earthaccess.download(dem_urls, local_path=str(local_dir))
         logger.info("[DEM Fetcher] Topography download complete.")

@@ -526,6 +526,14 @@ def process_dem_and_slope(
         dem_ds = None
         slope_ds = None
 
+        logger.info("[Filters] Cleaning up individual DEM granules to save disk space...")
+        for url in dem_urls:
+            if not url.startswith("/vsicurl/"):
+                try:
+                    Path(url).unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Could not delete {url}: {e}")
+
         return mask
 
     except Exception as e:
