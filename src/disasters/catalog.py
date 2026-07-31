@@ -77,6 +77,82 @@ def read_opera_metadata(output_dir: Path) -> pd.DataFrame:
     return df
 
 
+def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
+    """
+    Queries Earthdata for recent DSWx-HLS granules covering the bbox
+    and downloads ONLY their _B10_DEM.tif files to the local directory.
+    """
+    import datetime
+    import re
+    import earthaccess
+
+    logger = logging.getLogger(__name__)
+
+    # Look back 90 days to ensure we find a valid DEM
+    days_back = 90
+
+    # Fetch up to 50 granules to ensure complete spatial coverage
+    max_granules = 50
+
+    logger.info(
+        f"[DEM Fetcher] Missing local DEMs detected. Querying Earthdata for static topography (last {days_back} days)..."
+    )
+
+    try:
+        # Repackage our [S, N, W, E] bbox into Earthaccess format: (W, S, E, N)
+        s, n, w, e = bbox
+        cmr_bbox = (w, s, e, n)
+
+        # Query Earthdata for recent DSWx-HLS granules covering the bbox
+        end_date = datetime.datetime.now(datetime.timezone.utc)
+        start_date = end_date - datetime.timedelta(days=days_back)
+
+        results = earthaccess.search_data(
+            short_name="OPERA_L3_DSWX-HLS_V1",
+            bounding_box=cmr_bbox,
+            temporal=(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")),
+            count=max_granules,
+        )
+
+        if not results:
+            logger.warning(
+                "[DEM Fetcher] No recent DSWx-HLS granules found for this BBOX."
+            )
+            return
+
+        # Filter to get only the _B10_DEM URLs, deduplicating by MGRS Tile ID
+        dem_urls = []
+        seen_tiles = set()
+        
+        for granule in results:
+            for link in granule.data_links():
+                if "_B10_DEM.tif" in link:
+                    # Extract the MGRS tile ID (e.g., T22JCP)
+                    match = re.search(r'_(T\d{2}[A-Z]{3})_', link)
+                    if match:
+                        tile_id = match.group(1)
+                        if tile_id not in seen_tiles:
+                            seen_tiles.add(tile_id)
+                            dem_urls.append(link)
+                    else:
+                        # Fallback if the regex fails to find a tile ID
+                        if link not in dem_urls:
+                            dem_urls.append(link)
+
+        if not dem_urls:
+            logger.warning("[DEM Fetcher] Found granules, but no _B10_DEM.tif links.")
+            return
+
+        logger.info(
+            f"[DEM Fetcher] Downloading {len(dem_urls)} unique DEM layers to {local_dir}..."
+        )
+        earthaccess.download(dem_urls, local_path=str(local_dir))
+        logger.info("[DEM Fetcher] Topography download complete.")
+
+    except Exception as e:
+        logger.error(f"[DEM Fetcher] Failed to fetch missing DEMs: {e}")
+
+
 def cluster_by_time(
     df: pd.DataFrame, time_col: str = "Start Time", threshold_minutes: int = 120
 ) -> list:

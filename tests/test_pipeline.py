@@ -1,11 +1,21 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
+import rasterio
 from click.testing import CliRunner
+from rasterio.transform import from_origin
 
 from disasters.cli import cli
-from disasters.pipeline import PipelineConfig, run_download_only, run_pipeline
+from disasters.filters import apply_slope_mask_to_raster, process_dem_and_slope
+from disasters.io import parse_bbox_input
+from disasters.pipeline import (
+    PipelineConfig,
+    run_download_only,
+    run_pipeline,
+    run_slope_filter_only,
+)
 
 
 # ---------------------------------------------------------
@@ -151,3 +161,180 @@ def test_cli_multiple_flags():
         kwargs = mock_search.call_args[1]
         assert kwargs["product"] == ["OPERA_L3_DSWX-HLS_V1", "OPERA_L2_RTC-S1_V1"]
         assert kwargs["satellites"] == ["sentinel-1", "landsat"]
+
+
+def test_run_cli_parses_zoom_bbox_as_float_list(tmp_path):
+    runner = CliRunner()
+
+    with patch("disasters.cli.run_pipeline") as mock_run:
+        mock_run.return_value = tmp_path / "flood"
+
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "-b",
+                "30.2 30.3 -97.8 -97.7",
+                "-zb",
+                "30.21,30.29,-97.79,-97.71",
+                "-o",
+                str(tmp_path),
+                "-lt",
+                "Test",
+            ],
+        )
+
+    assert result.exit_code == 0
+    cfg = mock_run.call_args.args[0]
+    assert cfg.zoom_bbox == [30.21, 30.29, -97.79, -97.71]
+
+
+def test_run_cli_rejects_non_numeric_zoom_bbox(tmp_path):
+    runner = CliRunner()
+
+    with patch("disasters.cli.run_pipeline") as mock_run:
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "-b",
+                "30.2 30.3 -97.8 -97.7",
+                "-zb",
+                "POLYGON((0 0,1 0,1 1,0 1,0 0))",
+                "-o",
+                str(tmp_path),
+                "-lt",
+                "Test",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Failed to parse zoom bounding box" in result.output
+    mock_run.assert_not_called()
+
+
+def test_apply_slope_mask_to_uint8_without_source_nodata(tmp_path):
+    """Masked uint8 rasters without source nodata should use a valid output nodata value."""
+    target_tif = tmp_path / "target.tif"
+    slope_tif = tmp_path / "slope.tif"
+    output_tif = tmp_path / "output.tif"
+
+    profile = {
+        "driver": "GTiff",
+        "height": 2,
+        "width": 2,
+        "count": 1,
+        "dtype": "uint8",
+        "crs": "EPSG:4326",
+        "transform": from_origin(0, 2, 1, 1),
+    }
+
+    with rasterio.open(target_tif, "w", **profile) as dst:
+        dst.write(np.array([[1, 2], [3, 4]], dtype=np.uint8), 1)
+
+    slope_profile = profile | {"dtype": "float32", "nodata": -9999}
+    with rasterio.open(slope_tif, "w", **slope_profile) as dst:
+        dst.write(np.array([[1, 20], [30, 2]], dtype=np.float32), 1)
+
+    assert apply_slope_mask_to_raster(target_tif, slope_tif, 10, output_tif)
+
+    with rasterio.open(output_tif) as src:
+        data = src.read(1)
+        assert src.nodata == 255
+
+    assert data.tolist() == [[255, 2], [3, 255]]
+
+
+def test_parse_bbox_input_preserves_url_aoi():
+    url = "https://example.com/aoi.geojson"
+
+    assert parse_bbox_input(url) == url
+
+
+@patch("disasters.filters.gdal.DEMProcessing")
+@patch("disasters.filters.gdal.Warp")
+@patch("disasters.catalog.fetch_missing_dems")
+@patch("disasters.pipeline.get_local_spatial_properties")
+def test_process_dem_and_slope_fetches_missing_local_dems(
+    mock_spatial, mock_fetch, mock_warp, mock_dem_processing, tmp_path
+):
+    local_wtr = tmp_path / "OPERA_L3_DSWX-HLS_T11ABC_20240101T000000Z_B01_WTR.tif"
+    fetched_dem = tmp_path / "OPERA_L3_DSWX-HLS_T11ABC_20240101T000000Z_B10_DEM.tif"
+    local_wtr.touch()
+
+    df = pd.DataFrame(
+        {
+            "Dataset": ["OPERA_L3_DSWX-HLS_V1"],
+            "Download URL WTR": [str(local_wtr)],
+        }
+    )
+    mock_spatial.return_value = ([0, 1, 0, 1], "EPSG:4326")
+
+    def create_dem(_bbox, output_dir):
+        (output_dir / fetched_dem.name).touch()
+
+    mock_fetch.side_effect = create_dem
+
+    class FakeDataset:
+        def ReadAsArray(self):
+            return np.array([[5, 15]], dtype=np.float32)
+
+    mock_warp.return_value = object()
+    mock_dem_processing.return_value = FakeDataset()
+    master_grid = {
+        "shape": (1, 2),
+        "transform": from_origin(0, 1, 1, 1),
+        "dst_crs": "EPSG:4326",
+    }
+
+    mask = process_dem_and_slope(df, master_grid, 10, tmp_path)
+
+    mock_fetch.assert_called_once()
+    mock_warp.assert_called_once()
+    assert str(fetched_dem) in mock_warp.call_args.args[1]
+    assert mask.tolist() == [[True, False]]
+
+
+@patch("disasters.pipeline.authenticate")
+@patch("disasters.filters.apply_slope_mask_to_raster")
+@patch("disasters.filters.process_dem_and_slope")
+@patch("disasters.pipeline.get_master_grid_props")
+@patch("disasters.pipeline.get_local_spatial_properties")
+@patch("disasters.pipeline.scan_local_directory")
+@patch("earthaccess.auth.Auth")
+def test_run_slope_filter_only_processes_nested_tifs(
+    mock_earthaccess_auth,
+    mock_scan,
+    mock_spatial,
+    mock_grid,
+    mock_process_slope,
+    mock_apply_mask,
+    mock_auth,
+    tmp_path,
+):
+    nested_dir = tmp_path / "input" / "data"
+    nested_dir.mkdir(parents=True)
+    nested_tif = nested_dir / "OPERA_L2_RTC-S1_T11ABC_20240101T000000Z_VV.tif"
+    nested_tif.touch()
+    output_dir = tmp_path / "output"
+
+    mock_earthaccess_auth.return_value.authenticated = True
+    mock_scan.return_value = pd.DataFrame()
+    mock_spatial.return_value = ([0, 1, 0, 1], "EPSG:4326")
+    mock_grid.return_value = {
+        "shape": (1, 1),
+        "transform": from_origin(0, 1, 1, 1),
+        "dst_crs": "EPSG:4326",
+    }
+
+    def create_slope(*_args, **kwargs):
+        (kwargs["output_dir"] / "slope.tif").touch()
+        return np.array([[False]])
+
+    mock_process_slope.side_effect = create_slope
+    mock_apply_mask.return_value = True
+
+    assert run_slope_filter_only(tmp_path / "input", 10, output_dir) == output_dir
+
+    mock_apply_mask.assert_called_once()
+    assert mock_apply_mask.call_args.args[0] == nested_tif
