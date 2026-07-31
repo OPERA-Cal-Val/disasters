@@ -1025,12 +1025,11 @@ def run_slope_filter_only(
 
     logger.info("[Pipeline] Authenticating with Earthdata...")
     try:
-        authenticate()
-        import earthaccess
+        username, password = authenticate()
 
-        # Verify the session actually established successfully
-        if not earthaccess.auth.Auth().authenticated:
-            raise RuntimeError("Earthdata login was unsuccessful.")
+        # Verify the credentials were retrieved
+        if not username or not password:
+            raise RuntimeError("Could not find valid Earthdata credentials in ~/.netrc.")
 
     except Exception as e:
         logger.error(f"[Pipeline] Earthdata authentication failed: {e}")
