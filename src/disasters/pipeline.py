@@ -108,6 +108,7 @@ class PipelineConfig:
     skip_existing: bool = False
     functionality: str = "opera_search"
     satellites: list[str] | None = None
+    no_hls: bool = False
 
 
 def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], str]:
@@ -253,12 +254,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
         # Determine if HLS source scenes should be included
         needs_hls = False
-        if np_prod:
-            needs_hls = any("HLS" in p for p in np_prod)
-        elif config.mode in ["flood", "fire", "landslide"]:
-            needs_hls = True
-        elif not config.mode and not config.product:
-            needs_hls = True
+        if not config.no_hls:
+            if np_prod:
+                needs_hls = any("HLS" in p for p in np_prod)
+            elif config.mode in ["flood", "fire", "landslide"]:
+                needs_hls = True
+            elif not config.mode and not config.product:
+                needs_hls = True
 
         output_dir_np = next_pass.run_next_pass(
             bbox=next_pass_bbox,
@@ -415,6 +417,7 @@ def run_search_only(
     functionality: str = "opera_search",
     compute_cloudiness: bool = False,
     satellites: list[str] | None = None,
+    no_hls: bool = False,
 ) -> Path | None:
     """
     Runs next_pass to discover products and generate metadata without downloading imagery.
@@ -428,6 +431,7 @@ def run_search_only(
         product (str | None): If specified, filters the metadata summary to only include this specific product.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
         satellites (list[str] | None): Optional list of satellite platforms to filter products (e.g., ["sentinel-1", "sentinel-2", "landsat", "nisar"]).
+        no_hls (bool): If True, excludes HLS source scenes from the search results.
     """
     import shutil
 
@@ -448,12 +452,13 @@ def run_search_only(
 
     # Determine if HLS source scenes should be included
     needs_hls = False
-    if np_prod:
-        needs_hls = any("HLS" in p for p in np_prod)
-    elif mode in ["flood", "fire", "landslide"]:
-        needs_hls = True
-    elif not mode and not product:
-        needs_hls = True
+    if not no_hls:
+        if np_prod:
+            needs_hls = any("HLS" in p for p in np_prod)
+        elif mode in ["flood", "fire", "landslide"]:
+            needs_hls = True
+        elif not mode and not product:
+            needs_hls = True
 
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
@@ -540,6 +545,7 @@ def run_download_only(
     product: str | list[str] | tuple[str, ...] | None = None,
     functionality: str = "opera_search",
     compute_cloudiness: bool = False,
+    no_hls: bool = False,
 ) -> Path | None:
     """
     Runs next_pass to discover products and downloads the raw GeoTIFFs to a local directory.
@@ -553,6 +559,7 @@ def run_download_only(
         mode (str | None): If specified, filters downloads to only include relevant datasets/layers for this mode.
         product (str | list[str] | tuple | None): If specified, filters downloads to only include this specific product or list of products.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
+        no_hls (bool): If True, excludes HLS source scenes from the search results.
     """
     import concurrent.futures
     import shutil
@@ -595,12 +602,13 @@ def run_download_only(
 
     # Determine if HLS source scenes should be included
     needs_hls = False
-    if np_prod:
-        needs_hls = any("HLS" in p for p in np_prod)
-    elif mode in ["flood", "fire", "landslide"]:
-        needs_hls = True
-    elif not mode and not product:
-        needs_hls = True
+    if not no_hls:
+        if np_prod:
+            needs_hls = any("HLS" in p for p in np_prod)
+        elif mode in ["flood", "fire", "landslide"]:
+            needs_hls = True
+        elif not mode and not product:
+            needs_hls = True
 
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
