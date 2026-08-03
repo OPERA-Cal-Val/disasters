@@ -134,17 +134,14 @@ def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], s
         all_files.extend(df_opera[c].dropna().tolist())
     all_files = list(set(all_files))  # Unique files only
 
-    minx, miny, maxx, maxy = float("inf"), float("inf"), float("-inf"), float("-inf")
-    crs_counter = Counter()
-
-    for f in all_files:
+    def read_file_properties(f):
+        """Read bounds and CRS from a single file."""
         try:
             with rasterio.open(f) as src:
                 bounds = src.bounds
                 crs = src.crs
 
-                if crs is not None:
-                    crs_counter[crs.to_string()] += 1
+                crs_str = crs.to_string() if crs is not None else None
 
                 # Transform to EPSG:4326 to match S, N, W, E expected format
                 if crs and crs.to_string() != "EPSG:4326":
@@ -154,12 +151,28 @@ def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], s
                 else:
                     left, bottom, right, top = bounds
 
-                minx = min(minx, left)
-                miny = min(miny, bottom)
-                maxx = max(maxx, right)
-                maxy = max(maxy, top)
+                return (left, bottom, right, top, crs_str)
         except Exception as e:
             logger.warning(f"Could not read spatial properties from {f}: {e}")
+            return None
+
+    # Read files in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(read_file_properties, all_files))
+
+    # Aggregate results
+    minx, miny, maxx, maxy = float("inf"), float("inf"), float("-inf"), float("-inf")
+    crs_counter = Counter()
+
+    for result in results:
+        if result is not None:
+            left, bottom, right, top, crs_str = result
+            minx = min(minx, left)
+            miny = min(miny, bottom)
+            maxx = max(maxx, right)
+            maxy = max(maxy, top)
+            if crs_str is not None:
+                crs_counter[crs_str] += 1
 
     if minx == float("inf"):
         raise RuntimeError("Could not calculate bounding box from local files.")
@@ -1512,6 +1525,101 @@ def run_rgb_task(vv_path, vh_path, rgb_path, skip_existing) -> float:
     return time.time() - t0
 
 
+def stack_hls_composite(red_path: Path, data_dir: Path, skip_existing: bool) -> None:
+    """
+    Stack individual HLS bands (Red, Green, Blue, NIR) into a 4-band composite.
+
+    Args:
+        red_path: Path to HLS-RED mosaic file
+        data_dir: Directory containing band files
+        skip_existing: Skip if composite already exists
+
+    Returns:
+        None
+    """
+    red_name = red_path.name
+    green_name = red_name.replace("HLS-RED", "HLS-GREEN")
+    blue_name = red_name.replace("HLS-RED", "HLS-BLUE")
+    nir_name = red_name.replace("HLS-RED", "HLS-NIR")
+
+    green_path = data_dir / green_name
+    blue_path = data_dir / blue_name
+    nir_path = data_dir / nir_name
+
+    # Verify all 4 spectral components exist
+    if not (green_path.exists() and blue_path.exists() and nir_path.exists()):
+        missing_bands = []
+        if not green_path.exists():
+            missing_bands.append("Green")
+        if not blue_path.exists():
+            missing_bands.append("Blue")
+        if not nir_path.exists():
+            missing_bands.append("NIR")
+        logger.warning(
+            f"Skipping 4-band HLS composite for {red_name}: "
+            f"Missing required band(s): {', '.join(missing_bands)}"
+        )
+        return
+
+    name_parts = red_name.split("_HLS-RED_")
+    if len(name_parts) == 2:
+        combined_name = f"{name_parts[0]}_HLS-4BAND_{name_parts[1]}"
+    else:
+        # Fallback (in case the naming convention ever changes)
+        combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
+
+    combined_path = data_dir / combined_name
+
+    if skip_existing and combined_path.exists():
+        logger.info(
+            f"4-band HLS composite already exists, skipping generation: {combined_name}"
+        )
+        # Keep data directory clean by sweeping away old intermediate elements
+        for p in [red_path, green_path, blue_path, nir_path]:
+            p.unlink(missing_ok=True)
+        return
+
+    logger.info(f"Creating 4-band analytical HLS stacked composite: {combined_name}")
+    try:
+        with (
+            rasterio.open(red_path) as src_r,
+            rasterio.open(green_path) as src_g,
+            rasterio.open(blue_path) as src_b,
+            rasterio.open(nir_path) as src_inf,
+        ):
+            profile = src_r.profile.copy()
+            profile.update(
+                count=4,
+                compress="deflate",
+                tiled=True,
+                dtype=src_r.meta["dtype"],
+            )
+
+            tmp_combined = combined_path.with_suffix(".tmp.tif")
+            with rasterio.open(tmp_combined, "w", **profile) as dst:
+                dst.write(src_r.read(1), 1)
+                dst.write(src_g.read(1), 2)
+                dst.write(src_b.read(1), 3)
+                dst.write(src_inf.read(1), 4)
+
+                # Embed clean text band tags inside the geotiff container metadata
+                dst.set_band_description(1, "Red")
+                dst.set_band_description(2, "Green")
+                dst.set_band_description(3, "Blue")
+                dst.set_band_description(4, "NIR")
+
+        # Convert standard file to Cloud Optimized GeoTIFF (COG) in-place
+        save_gtiff_as_cog(tmp_combined, combined_path)
+        tmp_combined.unlink(missing_ok=True)
+
+        # Delete intermediate single-band components to optimize storage space
+        for p in [red_path, green_path, blue_path, nir_path]:
+            p.unlink(missing_ok=True)
+
+    except Exception as e:
+        logger.error(f"Failed to generate 4-band HLS composite for {red_name}: {e}")
+
+
 def generate_products(
     df_opera,
     mode,
@@ -2167,7 +2275,8 @@ def generate_products(
                                         if cmap_temp is not None:
                                             colormap = cmap_temp
 
-                            for i, da in enumerate(ds_group):
+                            def warp_single_dataset(i, da):
+                                """Warp a single dataset, optionally with CONF band."""
                                 da_warped = warp_dataarray_to_grid(
                                     da,
                                     master_grid,
@@ -2200,9 +2309,22 @@ def generate_products(
                                         [da_warped, conf_warped], dim="band"
                                     )
                                     combined = combined.assign_coords(band=[1, 2])
-                                    all_warped_ds.append(combined)
+                                    return combined
                                 else:
-                                    all_warped_ds.append(da_warped)
+                                    return da_warped
+
+                            # Warp datasets in parallel, preserving order
+                            with concurrent.futures.ThreadPoolExecutor(
+                                max_workers=5
+                            ) as warp_executor:
+                                all_warped_ds.extend(
+                                    warp_executor.map(
+                                        lambda idx_da: warp_single_dataset(
+                                            idx_da[0], idx_da[1]
+                                        ),
+                                        enumerate(ds_group),
+                                    )
+                                )
 
                         if not all_warped_ds:
                             continue
@@ -2607,96 +2729,20 @@ def generate_products(
         logger.info("Waiting for all background tasks to finish...")
         executor.shutdown(wait=True)
 
-    # Stack individual HLS bands into a 4-band GeoTIFF per pass
+    # Stack individual HLS bands into a 4-band GeoTIFF per pass (parallel)
     logger.info("Stacking individual HLS bands into unified 4-band composites...")
     hls_red_files = list(data_dir.glob("*_HLS-RED_*_mosaic.tif"))
 
-    for red_path in hls_red_files:
-        red_name = red_path.name
-        green_name = red_name.replace("HLS-RED", "HLS-GREEN")
-        blue_name = red_name.replace("HLS-RED", "HLS-BLUE")
-        nir_name = red_name.replace("HLS-RED", "HLS-NIR")
-
-        green_path = data_dir / green_name
-        blue_path = data_dir / blue_name
-        nir_path = data_dir / nir_name
-
-        # Verify all 4 spectral components exist for this specific pass
-        if green_path.exists() and blue_path.exists() and nir_path.exists():
-            name_parts = red_name.split("_HLS-RED_")
-            if len(name_parts) == 2:
-                combined_name = f"{name_parts[0]}_HLS-4BAND_{name_parts[1]}"
-            else:
-                # Fallback (in case the naming convention ever changes)
-                combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
-
-            combined_path = data_dir / combined_name
-
-            if skip_existing and combined_path.exists():
-                logger.info(
-                    f"4-band HLS composite already exists, skipping generation: {combined_name}"
+    if hls_red_files:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as hls_executor:
+            hls_futures = [
+                hls_executor.submit(
+                    stack_hls_composite, red_path, data_dir, skip_existing
                 )
-                # Keep data directory clean by sweeping away old intermediate elements
-                for p in [red_path, green_path, blue_path, nir_path]:
-                    p.unlink(missing_ok=True)
-                continue
-
-            logger.info(
-                f"Creating 4-band analytical HLS stacked composite: {combined_name}"
-            )
-            try:
-                with (
-                    rasterio.open(red_path) as src_r,
-                    rasterio.open(green_path) as src_g,
-                    rasterio.open(blue_path) as src_b,
-                    rasterio.open(nir_path) as src_inf,
-                ):
-
-                    profile = src_r.profile.copy()
-                    profile.update(
-                        count=4,
-                        compress="deflate",
-                        tiled=True,
-                        dtype=src_r.meta["dtype"],
-                    )
-
-                    tmp_combined = combined_path.with_suffix(".tmp.tif")
-                    with rasterio.open(tmp_combined, "w", **profile) as dst:
-                        dst.write(src_r.read(1), 1)
-                        dst.write(src_g.read(1), 2)
-                        dst.write(src_b.read(1), 3)
-                        dst.write(src_inf.read(1), 4)
-
-                        # Embed clean text band tags inside the geotiff container metadata
-                        dst.set_band_description(1, "Red")
-                        dst.set_band_description(2, "Green")
-                        dst.set_band_description(3, "Blue")
-                        dst.set_band_description(4, "NIR")
-
-                # Convert standard file to Cloud Optimized GeoTIFF (COG) in-place
-                save_gtiff_as_cog(tmp_combined, combined_path)
-                tmp_combined.unlink(missing_ok=True)
-
-                # Delete intermediate single-band components to optimize storage space
-                for p in [red_path, green_path, blue_path, nir_path]:
-                    p.unlink(missing_ok=True)
-
-            except Exception as e:
-                logger.error(
-                    f"Failed to generate 4-band HLS composite for {red_name}: {e}"
-                )
-        else:
-            missing_bands = []
-            if not green_path.exists():
-                missing_bands.append("Green")
-            if not blue_path.exists():
-                missing_bands.append("Blue")
-            if not nir_path.exists():
-                missing_bands.append("NIR")
-            logger.warning(
-                f"Skipping 4-band HLS composite for {red_name}: "
-                f"Missing required band(s): {', '.join(missing_bands)}"
-            )
+                for red_path in hls_red_files
+            ]
+            # Wait for all composites to finish
+            concurrent.futures.wait(hls_futures)
 
     if benchmark_stats is not None:
         # Process Plotting Futures (Standard Mosaics)
