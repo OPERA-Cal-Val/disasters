@@ -2649,6 +2649,18 @@ def generate_products(
                     logger.error(
                         f"Failed to generate 4-band HLS composite for {red_name}: {e}"
                     )
+            else:
+                missing_bands = []
+                if not green_path.exists():
+                    missing_bands.append("Green")
+                if not blue_path.exists():
+                    missing_bands.append("Blue")
+                if not nir_path.exists():
+                    missing_bands.append("NIR")
+                logger.warning(
+                    f"Skipping 4-band HLS composite for {red_name}: "
+                    f"Missing required band(s): {', '.join(missing_bands)}"
+                )
 
         if benchmark_stats is not None:
             # Process Plotting Futures (Standard Mosaics)
