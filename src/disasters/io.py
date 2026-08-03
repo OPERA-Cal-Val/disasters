@@ -355,6 +355,8 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
     # Export as Shapefile into /shp using GDAL/OGR natively
     shp_dir = output_dir / "shp"
     shp_path = shp_dir / f"{name}.shp"
+    ds = None
+    feature = None
     try:
         shp_dir.mkdir(parents=True, exist_ok=True)
         driver = ogr.GetDriverByName("ESRI Shapefile")
@@ -426,7 +428,8 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
             feature.SetGeometry(poly)
 
         layer.CreateFeature(feature)
-
-        feature, ds = None, None
     except Exception as e:
         logger.warning(f"Failed to export AOI shapefile: {e}")
+    finally:
+        feature = None
+        ds = None
