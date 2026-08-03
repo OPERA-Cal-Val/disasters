@@ -274,6 +274,18 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
 
     miny, maxy, minx, maxx = bbox
 
+    # Validate EPSG:4326 coordinate ranges
+    if not (-90 <= miny <= 90 and -90 <= maxy <= 90):
+        raise ValueError(
+            f"Latitude values must be in [-90, 90]. Got miny={miny}, maxy={maxy}"
+        )
+    if not (-180 <= minx <= 180 and -180 <= maxx <= 180):
+        raise ValueError(
+            f"Longitude values must be in [-180, 180]. Got minx={minx}, maxx={maxx}"
+        )
+    if miny > maxy:
+        raise ValueError(f"miny ({miny}) cannot be greater than maxy ({maxy})")
+
     # Filename formatting
     def format_coord(val, pos_dir, neg_dir):
         direction = pos_dir if val >= 0 else neg_dir
