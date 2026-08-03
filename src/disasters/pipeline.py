@@ -1731,6 +1731,19 @@ def generate_products(
                             mosaic_path = data_dir / mosaic_name
                             tmp_path = data_dir / f"tmp_{mosaic_name}"
 
+                            # For HLS bands, check if 4-band composite already exists
+                            # If so, skip processing this individual band entirely
+                            if skip_existing and layer.startswith("HLS-"):
+                                composite_name = (
+                                    f"{short_name}_HLS-4BAND_{pass_id}_mosaic.tif"
+                                )
+                                composite_path = data_dir / composite_name
+                                if composite_path.exists():
+                                    logger.info(
+                                        f"4-band HLS composite already exists, skipping {layer} band processing: {composite_name}"
+                                    )
+                                    continue
+
                             # Skip if mosaic already exists
                             if skip_existing and mosaic_path.exists():
                                 logger.info(
