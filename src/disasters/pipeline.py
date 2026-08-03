@@ -1577,13 +1577,11 @@ def generate_products(
         "HLS Download URL (Fmask)": "HLS-FMASK",
     }
     for old_col, new_layer in hls_mapping.items():
+        new_col = f"Download URL {new_layer}"
         if old_col in df_opera.columns:
-            # Rename the column so the existing loop finds it using f"Download URL {layer}"
-            df_opera.rename(
-                columns={old_col: f"Download URL {new_layer}"}, inplace=True
-            )
-            if new_layer not in layer_names:
-                layer_names.append(new_layer)
+            df_opera.rename(columns={old_col: new_col}, inplace=True)
+        if new_col in df_opera.columns and new_layer not in layer_names:
+            layer_names.append(new_layer)
 
     # Filter to see if we have ANY data for the products required by this mode, if not, exit
     df_mode_data = df_opera[df_opera["Dataset"].isin(short_names)]
