@@ -2625,7 +2625,7 @@ def generate_products(
         if green_path.exists() and blue_path.exists() and nir_path.exists():
             name_parts = red_name.split("_HLS-RED_")
             if len(name_parts) == 2:
-                combined_name = f"HLS-4BAND_{name_parts[1]}"
+                combined_name = f"{name_parts[0]}_HLS-4BAND_{name_parts[1]}"
             else:
                 # Fallback (in case the naming convention ever changes)
                 combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
