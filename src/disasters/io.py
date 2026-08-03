@@ -289,24 +289,30 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
     # Export as GeoJSON into /geojson
     geojson_dir = output_dir / "geojson"
     geojson_path = geojson_dir / f"{name}.geojson"
+    
+    if minx > maxx:
+        geometry = {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [[[minx, miny], [180.0, miny], [180.0, maxy], [minx, maxy], [minx, miny]]],
+                [[[-180.0, miny], [maxx, miny], [maxx, maxy], [-180.0, maxy], [-180.0, miny]]]
+            ],
+        }
+    else:
+        geometry = {
+            "type": "Polygon",
+            "coordinates": [
+                [[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]
+            ],
+        }
+
     geojson_data = {
         "type": "FeatureCollection",
         "features": [
             {
                 "type": "Feature",
                 "properties": {"name": "Area of Interest"},
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [minx, miny],
-                            [maxx, miny],
-                            [maxx, maxy],
-                            [minx, maxy],
-                            [minx, miny],
-                        ]
-                    ],
-                },
+                "geometry": geometry,
             }
         ],
     }
@@ -335,7 +341,8 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(4326)
 
-        layer = ds.CreateLayer("AOI", srs, ogr.wkbPolygon)
+        geom_type = ogr.wkbMultiPolygon if minx > maxx else ogr.wkbPolygon
+        layer = ds.CreateLayer("AOI", srs, geom_type)
 
         field_defn = ogr.FieldDefn("Name", ogr.OFTString)
         field_defn.SetWidth(50)
@@ -344,20 +351,34 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
         feature = ogr.Feature(layer.GetLayerDefn())
         feature.SetField("Name", "Area of Interest")
 
-        ring = ogr.Geometry(ogr.wkbLinearRing)
-        for pt in [
-            (minx, miny),
-            (maxx, miny),
-            (maxx, maxy),
-            (minx, maxy),
-            (minx, miny),
-        ]:
-            ring.AddPoint(*pt)
+        if minx > maxx:
+            multi = ogr.Geometry(ogr.wkbMultiPolygon)
+            
+            # Western half
+            ring1 = ogr.Geometry(ogr.wkbLinearRing)
+            for pt in [(minx, miny), (180.0, miny), (180.0, maxy), (minx, maxy), (minx, miny)]:
+                ring1.AddPoint(*pt)
+            poly1 = ogr.Geometry(ogr.wkbPolygon)
+            poly1.AddGeometry(ring1)
+            multi.AddGeometry(poly1)
 
-        poly = ogr.Geometry(ogr.wkbPolygon)
-        poly.AddGeometry(ring)
+            # Eastern half
+            ring2 = ogr.Geometry(ogr.wkbLinearRing)
+            for pt in [(-180.0, miny), (maxx, miny), (maxx, maxy), (-180.0, maxy), (-180.0, miny)]:
+                ring2.AddPoint(*pt)
+            poly2 = ogr.Geometry(ogr.wkbPolygon)
+            poly2.AddGeometry(ring2)
+            multi.AddGeometry(poly2)
 
-        feature.SetGeometry(poly)
+            feature.SetGeometry(multi)
+        else:
+            ring = ogr.Geometry(ogr.wkbLinearRing)
+            for pt in [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)]:
+                ring.AddPoint(*pt)
+            poly = ogr.Geometry(ogr.wkbPolygon)
+            poly.AddGeometry(ring)
+            feature.SetGeometry(poly)
+
         layer.CreateFeature(feature)
 
         feature, ds = None, None
