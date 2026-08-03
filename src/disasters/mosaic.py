@@ -620,37 +620,26 @@ def compile_and_load_data(
 def merge_first_valid(
     old_data,
     new_data,
-    old_nodata=None,
-    new_nodata=None,
+    merged_mask=None,
+    new_mask=None,
     index=None,
     roff=None,
     coff=None,
 ):
     """
     Element-wise merge method for continuous integer imagery.
+    Uses Rasterio's mask inputs to perform a copy-first-valid operation.
     """
-    def _normalize_nodata(nd):
-        # Fall back to HLS standard -9999 if nodata isn't explicitly passed or is unparseable
-        if (
-            nd is None
-            or hasattr(nd, "shape")
-            or isinstance(nd, (np.ndarray, list))
-        ):
-            return -9999
-        return nd
-
-    o_nodata = _normalize_nodata(old_nodata)
-    n_nodata = _normalize_nodata(new_nodata)
-
-    # Valid pixels in new_data are those that do not equal new_nodata
-    valid_mask = new_data != n_nodata
-
-    # Target pixels in old_data to update are those currently matching old_nodata
-    update_mask = (old_data == o_nodata) & valid_mask
+    # Target pixels in old_data to update are where merged_mask is True (currently nodata)
+    # and new_mask is False (new valid data exists)
+    update_mask = merged_mask & ~new_mask
 
     old_data[update_mask] = new_data[update_mask]
+    
+    # Update the merged mask so subsequent granules know these pixels are now valid
+    merged_mask[update_mask] = False
+    
     return old_data
-
 
 def mosaic_opera(
     DS: list,
