@@ -629,18 +629,25 @@ def merge_first_valid(
     """
     Element-wise merge method for continuous integer imagery.
     """
-    # Fall back to HLS standard -9999 if nodata isn't explicitly passed by the merge engine
-    if (
-        old_nodata is None
-        or hasattr(old_nodata, "shape")
-        or isinstance(old_nodata, (np.ndarray, list))
-    ):
-        nodata = -9999
-    else:
-        nodata = old_nodata
+    def _normalize_nodata(nd):
+        # Fall back to HLS standard -9999 if nodata isn't explicitly passed or is unparseable
+        if (
+            nd is None
+            or hasattr(nd, "shape")
+            or isinstance(nd, (np.ndarray, list))
+        ):
+            return -9999
+        return nd
 
-    valid_mask = new_data != nodata
-    update_mask = (old_data == nodata) & valid_mask
+    o_nodata = _normalize_nodata(old_nodata)
+    n_nodata = _normalize_nodata(new_nodata)
+
+    # Valid pixels in new_data are those that do not equal new_nodata
+    valid_mask = new_data != n_nodata
+
+    # Target pixels in old_data to update are those currently matching old_nodata
+    update_mask = (old_data == o_nodata) & valid_mask
+
     old_data[update_mask] = new_data[update_mask]
     return old_data
 
