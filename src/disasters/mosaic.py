@@ -635,11 +635,12 @@ def merge_first_valid(
     update_mask = merged_mask & ~new_mask
 
     old_data[update_mask] = new_data[update_mask]
-    
+
     # Update the merged mask so subsequent granules know these pixels are now valid
     merged_mask[update_mask] = False
-    
+
     return old_data
+
 
 def mosaic_opera(
     DS: list,

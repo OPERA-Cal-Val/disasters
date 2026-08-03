@@ -289,13 +289,29 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
     # Export as GeoJSON into /geojson
     geojson_dir = output_dir / "geojson"
     geojson_path = geojson_dir / f"{name}.geojson"
-    
+
     if minx > maxx:
         geometry = {
             "type": "MultiPolygon",
             "coordinates": [
-                [[[minx, miny], [180.0, miny], [180.0, maxy], [minx, maxy], [minx, miny]]],
-                [[[-180.0, miny], [maxx, miny], [maxx, maxy], [-180.0, maxy], [-180.0, miny]]]
+                [
+                    [
+                        [minx, miny],
+                        [180.0, miny],
+                        [180.0, maxy],
+                        [minx, maxy],
+                        [minx, miny],
+                    ]
+                ],
+                [
+                    [
+                        [-180.0, miny],
+                        [maxx, miny],
+                        [maxx, maxy],
+                        [-180.0, maxy],
+                        [-180.0, miny],
+                    ]
+                ],
             ],
         }
     else:
@@ -353,10 +369,16 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
 
         if minx > maxx:
             multi = ogr.Geometry(ogr.wkbMultiPolygon)
-            
+
             # Western half
             ring1 = ogr.Geometry(ogr.wkbLinearRing)
-            for pt in [(minx, miny), (180.0, miny), (180.0, maxy), (minx, maxy), (minx, miny)]:
+            for pt in [
+                (minx, miny),
+                (180.0, miny),
+                (180.0, maxy),
+                (minx, maxy),
+                (minx, miny),
+            ]:
                 ring1.AddPoint(*pt)
             poly1 = ogr.Geometry(ogr.wkbPolygon)
             poly1.AddGeometry(ring1)
@@ -364,7 +386,13 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
 
             # Eastern half
             ring2 = ogr.Geometry(ogr.wkbLinearRing)
-            for pt in [(-180.0, miny), (maxx, miny), (maxx, maxy), (-180.0, maxy), (-180.0, miny)]:
+            for pt in [
+                (-180.0, miny),
+                (maxx, miny),
+                (maxx, maxy),
+                (-180.0, maxy),
+                (-180.0, miny),
+            ]:
                 ring2.AddPoint(*pt)
             poly2 = ogr.Geometry(ogr.wkbPolygon)
             poly2.AddGeometry(ring2)
@@ -373,7 +401,13 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
             feature.SetGeometry(multi)
         else:
             ring = ogr.Geometry(ogr.wkbLinearRing)
-            for pt in [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)]:
+            for pt in [
+                (minx, miny),
+                (maxx, miny),
+                (maxx, maxy),
+                (minx, maxy),
+                (minx, miny),
+            ]:
                 ring.AddPoint(*pt)
             poly = ogr.Geometry(ogr.wkbPolygon)
             poly.AddGeometry(ring)

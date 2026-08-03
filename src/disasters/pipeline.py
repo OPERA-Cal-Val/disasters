@@ -633,7 +633,7 @@ def run_download_only(
     try:
         if isinstance(bbox, str):
             from utils.utils import bbox_to_geometry, bbox_type
-            
+
             _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
             export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], data_dir)
         else:
@@ -1123,7 +1123,9 @@ def run_slope_filter_only(
 
         # Verify the credentials were retrieved
         if not username or not password:
-            raise RuntimeError("Could not find valid Earthdata credentials in ~/.netrc.")
+            raise RuntimeError(
+                "Could not find valid Earthdata credentials in ~/.netrc."
+            )
 
     except Exception as e:
         logger.error(f"[Pipeline] Earthdata authentication failed: {e}")
@@ -1813,7 +1815,9 @@ def generate_products(
                                 out_nodata = np.nan
 
                             # Ensure categorical Fmask data is not interpolated
-                            resample_alg = "near" if layer == "HLS-FMASK" else "bilinear"
+                            resample_alg = (
+                                "near" if layer == "HLS-FMASK" else "bilinear"
+                            )
 
                             # Define Memory-Capped GDAL Warp Options
                             warp_options = gdal.WarpOptions(

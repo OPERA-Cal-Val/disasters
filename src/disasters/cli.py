@@ -387,7 +387,7 @@ def search(
     product: tuple[str, ...],
     satellites: tuple[str, ...],
     compute_cloudiness: bool,
-    no_hls: bool
+    no_hls: bool,
 ) -> None:
     """Query OPERA catalog and save metadata without downloading imagery."""
     if mode and product:
@@ -417,7 +417,7 @@ def search(
         product=list(product) if product else None,
         satellites=list(satellites) if satellites else None,
         compute_cloudiness=compute_cloudiness,
-        no_hls=no_hls
+        no_hls=no_hls,
     )
 
     if out_dir:
