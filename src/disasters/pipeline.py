@@ -484,14 +484,14 @@ def run_search_only(
     df_opera = read_opera_metadata(output_dir_np)
 
     # Export AOI to the metadata folder
-    if isinstance(bbox, str):
-        try:
+    try:
+        if isinstance(bbox, str):
             _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
             export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], output_dir_np)
-        except Exception:
-            pass
-    else:
-        export_aoi(bbox, output_dir_np)
+        else:
+            export_aoi(bbox, output_dir_np)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI bounding box in search pipeline: {e}")
 
     if df_opera.empty:
         logger.warning("No products found for the specified criteria.")
@@ -619,14 +619,14 @@ def run_download_only(
     df_opera = read_opera_metadata(output_dir_np)
 
     # Export AOI to the data folder
-    if isinstance(bbox, str):
-        try:
+    try:
+        if isinstance(bbox, str):
             _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
             export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], data_dir)
-        except Exception:
-            pass
-    else:
-        export_aoi(bbox, data_dir)
+        else:
+            export_aoi(bbox, data_dir)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI bounding box in download pipeline: {e}")
 
     if df_opera.empty:
         logger.warning("No products found for the specified criteria.")
@@ -840,7 +840,10 @@ def run_mosaic_only(
 
     # Export AOI to the mosaic output folder
     if internal_bbox is not None:
-        export_aoi(internal_bbox, output_dir)
+        try:
+            export_aoi(internal_bbox, output_dir)
+        except Exception as e:
+            logger.warning(f"Failed to export AOI bounding box in mosaic pipeline: {e}")
 
     # Calculate Master Grid
     crs_obj = pyproj.CRS.from_string(target_crs_proj4)
@@ -1597,7 +1600,10 @@ def generate_products(
     layouts_dir = ensure_directory(mode_dir / "layouts")
 
     # Export the AOI bounding box to the data folder
-    export_aoi(bbox, data_dir)
+    try:
+        export_aoi(bbox, data_dir)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI bounding box in generate_products: {e}")
 
     # Determine most common UTM CRS to warp all granules to across all dates
     target_crs_proj4 = get_master_crs(df_mode_data, mode)
