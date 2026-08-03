@@ -393,7 +393,7 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
                 (minx, maxy),
                 (minx, miny),
             ]:
-                ring1.AddPoint(*pt)
+                ring1.AddPoint_2D(*pt)
             poly1 = ogr.Geometry(ogr.wkbPolygon)
             poly1.AddGeometry(ring1)
             multi.AddGeometry(poly1)
@@ -407,7 +407,7 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
                 (-180.0, maxy),
                 (-180.0, miny),
             ]:
-                ring2.AddPoint(*pt)
+                ring2.AddPoint_2D(*pt)
             poly2 = ogr.Geometry(ogr.wkbPolygon)
             poly2.AddGeometry(ring2)
             multi.AddGeometry(poly2)
@@ -422,7 +422,7 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
                 (minx, maxy),
                 (minx, miny),
             ]:
-                ring.AddPoint(*pt)
+                ring.AddPoint_2D(*pt)
             poly = ogr.Geometry(ogr.wkbPolygon)
             poly.AddGeometry(ring)
             feature.SetGeometry(poly)
