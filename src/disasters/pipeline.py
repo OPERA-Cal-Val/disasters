@@ -20,7 +20,6 @@ import xarray as xr
 from osgeo import gdal
 from rasterio.enums import Resampling
 from rasterio.warp import transform_bounds
-from utils.utils import bbox_to_geometry, bbox_type
 
 # Local/Relative Imports
 from .auth import authenticate
@@ -298,6 +297,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     # Convert WKT/File to an SNWE list for internal mosaicking logic
     if isinstance(config.bbox, str):
         try:
+            from utils.utils import bbox_to_geometry, bbox_type
+
             bbox_parsed = bbox_type([config.bbox])
             geom, bounds, centroid = bbox_to_geometry(bbox_parsed, config.output_dir)
             minx, miny, maxx, maxy = bounds
@@ -491,6 +492,8 @@ def run_search_only(
     # Export AOI to the metadata folder
     try:
         if isinstance(bbox, str):
+            from utils.utils import bbox_to_geometry, bbox_type
+
             _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
             export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], output_dir_np)
         else:
@@ -629,6 +632,8 @@ def run_download_only(
     # Export AOI to the data folder
     try:
         if isinstance(bbox, str):
+            from utils.utils import bbox_to_geometry, bbox_type
+            
             _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
             export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], data_dir)
         else:
