@@ -938,13 +938,16 @@ def run_mosaic_only(
                         )
                         out_nodata = -9999 if layer.startswith("HLS") else np.nan
 
+                        # Ensure categorical Fmask data is not interpolated
+                        resample_alg = "near" if layer == "HLS-FMASK" else "bilinear"
+
                         warp_options = gdal.WarpOptions(
                             format="GTiff",
                             outputBounds=output_bounds,
                             width=width,
                             height=height,
                             dstSRS=master_grid["dst_crs"],
-                            resampleAlg="bilinear",
+                            resampleAlg=resample_alg,
                             dstNodata=out_nodata,
                             creationOptions=[
                                 "COMPRESS=DEFLATE",
@@ -1804,6 +1807,9 @@ def generate_products(
                                 out_type = gdal.GDT_Float32
                                 out_nodata = np.nan
 
+                            # Ensure categorical Fmask data is not interpolated
+                            resample_alg = "near" if layer == "HLS-FMASK" else "bilinear"
+
                             # Define Memory-Capped GDAL Warp Options
                             warp_options = gdal.WarpOptions(
                                 format="GTiff",
@@ -1811,7 +1817,7 @@ def generate_products(
                                 width=width,
                                 height=height,
                                 dstSRS=master_grid["dst_crs"],
-                                resampleAlg="bilinear",
+                                resampleAlg=resample_alg,
                                 dstNodata=out_nodata,
                                 creationOptions=[
                                     "COMPRESS=DEFLATE",
