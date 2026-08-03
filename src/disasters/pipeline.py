@@ -2594,117 +2594,117 @@ def generate_products(
         logger.info("Waiting for all background tasks to finish...")
         executor.shutdown(wait=True)
 
-        # Stack individual HLS bands into a 4-band GeoTIFF per pass
-        logger.info("Stacking individual HLS bands into unified 4-band composites...")
-        hls_red_files = list(data_dir.glob("*_HLS-RED_*_mosaic.tif"))
+    # Stack individual HLS bands into a 4-band GeoTIFF per pass
+    logger.info("Stacking individual HLS bands into unified 4-band composites...")
+    hls_red_files = list(data_dir.glob("*_HLS-RED_*_mosaic.tif"))
 
-        for red_path in hls_red_files:
-            red_name = red_path.name
-            green_name = red_name.replace("HLS-RED", "HLS-GREEN")
-            blue_name = red_name.replace("HLS-RED", "HLS-BLUE")
-            nir_name = red_name.replace("HLS-RED", "HLS-NIR")
+    for red_path in hls_red_files:
+        red_name = red_path.name
+        green_name = red_name.replace("HLS-RED", "HLS-GREEN")
+        blue_name = red_name.replace("HLS-RED", "HLS-BLUE")
+        nir_name = red_name.replace("HLS-RED", "HLS-NIR")
 
-            green_path = data_dir / green_name
-            blue_path = data_dir / blue_name
-            nir_path = data_dir / nir_name
+        green_path = data_dir / green_name
+        blue_path = data_dir / blue_name
+        nir_path = data_dir / nir_name
 
-            # Verify all 4 spectral components exist for this specific pass
-            if green_path.exists() and blue_path.exists() and nir_path.exists():
-                name_parts = red_name.split("_HLS-RED_")
-                if len(name_parts) == 2:
-                    combined_name = f"HLS-4BAND_{name_parts[1]}"
-                else:
-                    # Fallback (in case the naming convention ever changes)
-                    combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
-
-                combined_path = data_dir / combined_name
-
-                if skip_existing and combined_path.exists():
-                    logger.info(
-                        f"4-band HLS composite already exists, skipping generation: {combined_name}"
-                    )
-                    # Keep data directory clean by sweeping away old intermediate elements
-                    for p in [red_path, green_path, blue_path, nir_path]:
-                        p.unlink(missing_ok=True)
-                    continue
-
-                logger.info(
-                    f"Creating 4-band analytical HLS stacked composite: {combined_name}"
-                )
-                try:
-                    with (
-                        rasterio.open(red_path) as src_r,
-                        rasterio.open(green_path) as src_g,
-                        rasterio.open(blue_path) as src_b,
-                        rasterio.open(nir_path) as src_inf,
-                    ):
-
-                        profile = src_r.profile.copy()
-                        profile.update(
-                            count=4,
-                            compress="deflate",
-                            tiled=True,
-                            dtype=src_r.meta["dtype"],
-                        )
-
-                        tmp_combined = combined_path.with_suffix(".tmp.tif")
-                        with rasterio.open(tmp_combined, "w", **profile) as dst:
-                            dst.write(src_r.read(1), 1)
-                            dst.write(src_g.read(1), 2)
-                            dst.write(src_b.read(1), 3)
-                            dst.write(src_inf.read(1), 4)
-
-                            # Embed clean text band tags inside the geotiff container metadata
-                            dst.set_band_description(1, "Red")
-                            dst.set_band_description(2, "Green")
-                            dst.set_band_description(3, "Blue")
-                            dst.set_band_description(4, "NIR")
-
-                    # Convert standard file to Cloud Optimized GeoTIFF (COG) in-place
-                    save_gtiff_as_cog(tmp_combined, combined_path)
-                    tmp_combined.unlink(missing_ok=True)
-
-                    # Delete intermediate single-band components to optimize storage space
-                    for p in [red_path, green_path, blue_path, nir_path]:
-                        p.unlink(missing_ok=True)
-
-                except Exception as e:
-                    logger.error(
-                        f"Failed to generate 4-band HLS composite for {red_name}: {e}"
-                    )
+        # Verify all 4 spectral components exist for this specific pass
+        if green_path.exists() and blue_path.exists() and nir_path.exists():
+            name_parts = red_name.split("_HLS-RED_")
+            if len(name_parts) == 2:
+                combined_name = f"HLS-4BAND_{name_parts[1]}"
             else:
-                missing_bands = []
-                if not green_path.exists():
-                    missing_bands.append("Green")
-                if not blue_path.exists():
-                    missing_bands.append("Blue")
-                if not nir_path.exists():
-                    missing_bands.append("NIR")
-                logger.warning(
-                    f"Skipping 4-band HLS composite for {red_name}: "
-                    f"Missing required band(s): {', '.join(missing_bands)}"
+                # Fallback (in case the naming convention ever changes)
+                combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
+
+            combined_path = data_dir / combined_name
+
+            if skip_existing and combined_path.exists():
+                logger.info(
+                    f"4-band HLS composite already exists, skipping generation: {combined_name}"
                 )
+                # Keep data directory clean by sweeping away old intermediate elements
+                for p in [red_path, green_path, blue_path, nir_path]:
+                    p.unlink(missing_ok=True)
+                continue
 
-        if benchmark_stats is not None:
-            # Process Plotting Futures (Standard Mosaics)
-            total_plotting_time = sum(
-                f.result() for f in plotting_futures if f.exception() is None
+            logger.info(
+                f"Creating 4-band analytical HLS stacked composite: {combined_name}"
             )
-            total_diff_time = 0.0
+            try:
+                with (
+                    rasterio.open(red_path) as src_r,
+                    rasterio.open(green_path) as src_g,
+                    rasterio.open(blue_path) as src_b,
+                    rasterio.open(nir_path) as src_inf,
+                ):
 
-            # Process Differencing Pipeline Futures (Returns (diff_time, plot_time))
-            for f in differencing_futures:
-                if f.exception() is None:
-                    d_t, p_t = f.result()
-                    total_diff_time += d_t
-                    total_plotting_time += p_t
+                    profile = src_r.profile.copy()
+                    profile.update(
+                        count=4,
+                        compress="deflate",
+                        tiled=True,
+                        dtype=src_r.meta["dtype"],
+                    )
 
-            # Update Stats
-            if "plotting" in benchmark_stats:
-                benchmark_stats["plotting"]["seq"] = total_plotting_time
-            if "differencing" in benchmark_stats:
-                benchmark_stats["differencing"]["seq"] = total_diff_time
+                    tmp_combined = combined_path.with_suffix(".tmp.tif")
+                    with rasterio.open(tmp_combined, "w", **profile) as dst:
+                        dst.write(src_r.read(1), 1)
+                        dst.write(src_g.read(1), 2)
+                        dst.write(src_b.read(1), 3)
+                        dst.write(src_inf.read(1), 4)
 
-        shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+                        # Embed clean text band tags inside the geotiff container metadata
+                        dst.set_band_description(1, "Red")
+                        dst.set_band_description(2, "Green")
+                        dst.set_band_description(3, "Blue")
+                        dst.set_band_description(4, "NIR")
 
-        logger.info("All tasks complete.")
+                # Convert standard file to Cloud Optimized GeoTIFF (COG) in-place
+                save_gtiff_as_cog(tmp_combined, combined_path)
+                tmp_combined.unlink(missing_ok=True)
+
+                # Delete intermediate single-band components to optimize storage space
+                for p in [red_path, green_path, blue_path, nir_path]:
+                    p.unlink(missing_ok=True)
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to generate 4-band HLS composite for {red_name}: {e}"
+                )
+        else:
+            missing_bands = []
+            if not green_path.exists():
+                missing_bands.append("Green")
+            if not blue_path.exists():
+                missing_bands.append("Blue")
+            if not nir_path.exists():
+                missing_bands.append("NIR")
+            logger.warning(
+                f"Skipping 4-band HLS composite for {red_name}: "
+                f"Missing required band(s): {', '.join(missing_bands)}"
+            )
+
+    if benchmark_stats is not None:
+        # Process Plotting Futures (Standard Mosaics)
+        total_plotting_time = sum(
+            f.result() for f in plotting_futures if f.exception() is None
+        )
+        total_diff_time = 0.0
+
+        # Process Differencing Pipeline Futures (Returns (diff_time, plot_time))
+        for f in differencing_futures:
+            if f.exception() is None:
+                d_t, p_t = f.result()
+                total_diff_time += d_t
+                total_plotting_time += p_t
+
+        # Update Stats
+        if "plotting" in benchmark_stats:
+            benchmark_stats["plotting"]["seq"] = total_plotting_time
+        if "differencing" in benchmark_stats:
+            benchmark_stats["differencing"]["seq"] = total_diff_time
+
+    shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+
+    logger.info("All tasks complete.")
