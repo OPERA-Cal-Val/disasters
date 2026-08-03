@@ -277,7 +277,7 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
     # Filename formatting
     def format_coord(val, pos_dir, neg_dir):
         direction = pos_dir if val >= 0 else neg_dir
-        return f"{abs(val):.2f}{direction}".replace(".", "p")
+        return f"{abs(val):.6f}{direction}".replace(".", "p")
 
     lat_s = format_coord(miny, "N", "S")
     lat_n = format_coord(maxy, "N", "S")
