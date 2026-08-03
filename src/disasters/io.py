@@ -286,14 +286,8 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
 
     name = f"AOI_{lat_s}_{lat_n}_{lon_w}_{lon_e}"
 
-    # Create clean subdirectories
-    geojson_dir = output_dir / "geojson"
-    shp_dir = output_dir / "shp"
-
-    geojson_dir.mkdir(parents=True, exist_ok=True)
-    shp_dir.mkdir(parents=True, exist_ok=True)
-
     # Export as GeoJSON into /geojson
+    geojson_dir = output_dir / "geojson"
     geojson_path = geojson_dir / f"{name}.geojson"
     geojson_data = {
         "type": "FeatureCollection",
@@ -316,12 +310,19 @@ def export_aoi(bbox: list[float], output_dir: Path) -> None:
             }
         ],
     }
-    with open(geojson_path, "w") as f:
-        json.dump(geojson_data, f, indent=2)
+
+    try:
+        geojson_dir.mkdir(parents=True, exist_ok=True)
+        with open(geojson_path, "w") as f:
+            json.dump(geojson_data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI GeoJSON: {e}")
 
     # Export as Shapefile into /shp using GDAL/OGR natively
+    shp_dir = output_dir / "shp"
     shp_path = shp_dir / f"{name}.shp"
     try:
+        shp_dir.mkdir(parents=True, exist_ok=True)
         driver = ogr.GetDriverByName("ESRI Shapefile")
         if shp_path.exists():
             driver.DeleteDataSource(str(shp_path))
