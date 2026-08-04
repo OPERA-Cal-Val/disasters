@@ -617,8 +617,36 @@ def compile_and_load_data(
         return DS
 
 
+def merge_first_valid(
+    old_data,
+    new_data,
+    merged_mask=None,
+    new_mask=None,
+    index=None,
+    roff=None,
+    coff=None,
+):
+    """
+    Element-wise merge method for continuous integer imagery.
+    Uses Rasterio's mask inputs to perform a copy-first-valid operation.
+    """
+    # Target pixels in old_data to update are where merged_mask is True (currently nodata)
+    # and new_mask is False (new valid data exists)
+    update_mask = merged_mask & ~new_mask
+
+    old_data[update_mask] = new_data[update_mask]
+
+    # Update the merged mask so subsequent granules know these pixels are now valid
+    merged_mask[update_mask] = False
+
+    return old_data
+
+
 def mosaic_opera(
-    DS: list, product: str = "OPERA_L3_DSWX-S1_V1", merge_args: dict = {}
+    DS: list,
+    product: str = "OPERA_L3_DSWX-S1_V1",
+    layer: str = None,
+    merge_args: dict = {},
 ) -> Tuple[xr.DataArray, Optional[dict], float]:
     """
     Mosaics a list of OPERA product granules into a single image (in memory).
@@ -628,6 +656,7 @@ def mosaic_opera(
         product (str): OPERA product short name. Used to define pixel prioritization scheme in regions of OPERA granule overlap.
             Options include: "OPERA_L3_DSWX-HLS_V1","OPERA_L3_DSWX-S1_V1", "OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ANN-HLS_V1", "OPERA_L2_RTC-S1_V1"
             Default: "OPERA_L3_DSWX-S1_V1"
+        layer (str, optional): The specific layer name to mosaic. If None, defaults to the first layer in the DataArray.
         merge_args (dict, optional): A dictionary of arguments to pass to the rioxarray.merge_arrays function. Defaults to {}.
 
     Returns:
@@ -677,9 +706,12 @@ def mosaic_opera(
 
     valid_values = set(priority.keys())
 
-    # Check if any DataArray contains non-valid values, if so fall back to defaul rasterio.merge method
-    if contains_unexpected_values(DA, valid_values):
+    # Check if any DataArray contains non-valid values, if so fall back to default rasterio.merge method
+    if layer == "VEG-ANOM-MAX":
         method = "first"
+    elif contains_unexpected_values(DA, valid_values):
+        # Continuous imagery/unexpected values (HLS)
+        method = merge_first_valid
     elif product.startswith("OPERA_L3_DIST") or product.startswith("OPERA_L2_RTC"):
         method = "first"
     else:

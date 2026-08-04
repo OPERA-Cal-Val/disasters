@@ -526,7 +526,9 @@ def process_dem_and_slope(
         dem_ds = None
         slope_ds = None
 
-        logger.info("[Filters] Cleaning up individual DEM granules to save disk space...")
+        logger.info(
+            "[Filters] Cleaning up individual DEM granules to save disk space..."
+        )
         for url in dem_urls:
             if not url.startswith("/vsicurl/"):
                 try:

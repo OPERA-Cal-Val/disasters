@@ -84,6 +84,7 @@ def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
     """
     import datetime
     import re
+
     import earthaccess
 
     logger = logging.getLogger(__name__)
@@ -123,12 +124,12 @@ def fetch_missing_dems(bbox: list, local_dir: Path) -> None:
         # Filter to get only the _B10_DEM URLs, deduplicating by MGRS Tile ID
         dem_urls = []
         seen_tiles = set()
-        
+
         for granule in results:
             for link in granule.data_links():
                 if "_B10_DEM.tif" in link:
                     # Extract the MGRS tile ID (e.g., T22JCP)
-                    match = re.search(r'_(T\d{2}[A-Z]{3})_', link)
+                    match = re.search(r"_(T\d{2}[A-Z]{3})_", link)
                     if match:
                         tile_id = match.group(1)
                         if tile_id not in seen_tiles:

@@ -37,7 +37,7 @@ from .filters import (
     process_dem_and_slope,
     reclassify_snow_ice_as_water,
 )
-from .io import cleanup_temp_file, ensure_directory, scan_local_directory
+from .io import cleanup_temp_file, ensure_directory, export_aoi, scan_local_directory
 from .layouts import make_layout, make_map
 from .mosaic import (
     array_to_image,
@@ -107,6 +107,7 @@ class PipelineConfig:
     skip_existing: bool = False
     functionality: str = "opera_search"
     satellites: list[str] | None = None
+    no_hls: bool = False
 
 
 def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], str]:
@@ -133,17 +134,14 @@ def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], s
         all_files.extend(df_opera[c].dropna().tolist())
     all_files = list(set(all_files))  # Unique files only
 
-    minx, miny, maxx, maxy = float("inf"), float("inf"), float("-inf"), float("-inf")
-    crs_counter = Counter()
-
-    for f in all_files:
+    def read_file_properties(f):
+        """Read bounds and CRS from a single file."""
         try:
             with rasterio.open(f) as src:
                 bounds = src.bounds
                 crs = src.crs
 
-                if crs is not None:
-                    crs_counter[crs.to_string()] += 1
+                crs_str = crs.to_string() if crs is not None else None
 
                 # Transform to EPSG:4326 to match S, N, W, E expected format
                 if crs and crs.to_string() != "EPSG:4326":
@@ -153,12 +151,28 @@ def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], s
                 else:
                     left, bottom, right, top = bounds
 
-                minx = min(minx, left)
-                miny = min(miny, bottom)
-                maxx = max(maxx, right)
-                maxy = max(maxy, top)
+                return (left, bottom, right, top, crs_str)
         except Exception as e:
             logger.warning(f"Could not read spatial properties from {f}: {e}")
+            return None
+
+    # Read files in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(read_file_properties, all_files))
+
+    # Aggregate results
+    minx, miny, maxx, maxy = float("inf"), float("inf"), float("-inf"), float("-inf")
+    crs_counter = Counter()
+
+    for result in results:
+        if result is not None:
+            left, bottom, right, top, crs_str = result
+            minx = min(minx, left)
+            miny = min(miny, bottom)
+            maxx = max(maxx, right)
+            maxy = max(maxy, top)
+            if crs_str is not None:
+                crs_counter[crs_str] += 1
 
     if minx == float("inf"):
         raise RuntimeError("Could not calculate bounding box from local files.")
@@ -250,12 +264,23 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 else None
             )
 
+        # Determine if HLS source scenes should be included
+        needs_hls = False
+        if not config.no_hls:
+            if np_prod:
+                needs_hls = any("HLS" in p for p in np_prod)
+            elif config.mode in ["flood", "fire", "landslide"]:
+                needs_hls = True
+            elif not config.mode and not config.product:
+                needs_hls = True
+
         output_dir_np = next_pass.run_next_pass(
             bbox=next_pass_bbox,
             number_of_dates=config.number_of_dates,
             date=config.date,
             functionality=config.functionality,
             compute_cloudiness=config.compute_cloudiness,
+            include_hls=needs_hls,
             products=np_prod,
             satellites=config.satellites,
         )
@@ -406,6 +431,7 @@ def run_search_only(
     functionality: str = "opera_search",
     compute_cloudiness: bool = False,
     satellites: list[str] | None = None,
+    no_hls: bool = False,
 ) -> Path | None:
     """
     Runs next_pass to discover products and generate metadata without downloading imagery.
@@ -419,6 +445,7 @@ def run_search_only(
         product (str | None): If specified, filters the metadata summary to only include this specific product.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
         satellites (list[str] | None): Optional list of satellite platforms to filter products (e.g., ["sentinel-1", "sentinel-2", "landsat", "nisar"]).
+        no_hls (bool): If True, excludes HLS source scenes from the search results.
     """
     import shutil
 
@@ -437,6 +464,16 @@ def run_search_only(
             else None
         )
 
+    # Determine if HLS source scenes should be included
+    needs_hls = False
+    if not no_hls:
+        if np_prod:
+            needs_hls = any("HLS" in p for p in np_prod)
+        elif mode in ["flood", "fire", "landslide"]:
+            needs_hls = True
+        elif not mode and not product:
+            needs_hls = True
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
@@ -444,6 +481,7 @@ def run_search_only(
         date=date,
         functionality=functionality,
         compute_cloudiness=compute_cloudiness,
+        include_hls=needs_hls,
         products=np_prod,
         satellites=satellites,
     )
@@ -463,6 +501,19 @@ def run_search_only(
 
     # Read the metadata just to provide a helpful summary to the user
     df_opera = read_opera_metadata(output_dir_np)
+
+    # Export AOI to the metadata folder
+    try:
+        if isinstance(bbox, str):
+            from utils.utils import bbox_to_geometry, bbox_type
+
+            _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
+            export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], output_dir_np)
+        else:
+            export_aoi(bbox, output_dir_np)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI bounding box in search pipeline: {e}")
+
     if df_opera.empty:
         logger.warning("No products found for the specified criteria.")
         return output_dir_np
@@ -510,6 +561,7 @@ def run_download_only(
     product: str | list[str] | tuple[str, ...] | None = None,
     functionality: str = "opera_search",
     compute_cloudiness: bool = False,
+    no_hls: bool = False,
 ) -> Path | None:
     """
     Runs next_pass to discover products and downloads the raw GeoTIFFs to a local directory.
@@ -521,8 +573,9 @@ def run_download_only(
         date (str | None): Optional date string for filtering products.
         number_of_dates (int): Number of dates to retrieve if 'date' is specified.
         mode (str | None): If specified, filters downloads to only include relevant datasets/layers for this mode.
-        product (str | list[str] | None): If specified, filters downloads to only include this specific product or list of products.
+        product (str | list[str] | tuple | None): If specified, filters downloads to only include this specific product or list of products.
         compute_cloudiness (bool): Whether to compute cloudiness metrics during next_pass search.
+        no_hls (bool): If True, excludes HLS source scenes from the search results.
     """
     import concurrent.futures
     import shutil
@@ -531,7 +584,7 @@ def run_download_only(
 
     # Pre-check for unsupported products before authenticating or downloading
     if product:
-        prod_str = " ".join(product) if isinstance(product, list) else product
+        prod_str = " ".join(product) if isinstance(product, (list, tuple)) else product
         if any(unsupported in prod_str for unsupported in ["CSLC", "DISP"]):
             logger.info(
                 f"Downloading product '{product}' is not currently supported. Exiting..."
@@ -563,6 +616,16 @@ def run_download_only(
             else None
         )
 
+    # Determine if HLS source scenes should be included
+    needs_hls = False
+    if not no_hls:
+        if np_prod:
+            needs_hls = any("HLS" in p for p in np_prod)
+        elif mode in ["flood", "fire", "landslide"]:
+            needs_hls = True
+        elif not mode and not product:
+            needs_hls = True
+
     # Run the next_pass engine
     output_dir_np = next_pass.run_next_pass(
         bbox=next_pass_bbox,
@@ -570,6 +633,7 @@ def run_download_only(
         date=date,
         functionality=functionality,
         compute_cloudiness=compute_cloudiness,
+        include_hls=needs_hls,
         products=np_prod,
     )
 
@@ -577,6 +641,19 @@ def run_download_only(
 
     # Read the metadata
     df_opera = read_opera_metadata(output_dir_np)
+
+    # Export AOI to the data folder
+    try:
+        if isinstance(bbox, str):
+            from utils.utils import bbox_to_geometry, bbox_type
+
+            _, bounds, _ = bbox_to_geometry(bbox_type([bbox]), output_dir)
+            export_aoi([bounds[1], bounds[3], bounds[0], bounds[2]], data_dir)
+        else:
+            export_aoi(bbox, data_dir)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI bounding box in download pipeline: {e}")
+
     if df_opera.empty:
         logger.warning("No products found for the specified criteria.")
         return None
@@ -626,7 +703,7 @@ def run_download_only(
 
     elif product:
         logger.info(f"Filtering downloads for '{product}' product...")
-        short_names = product if isinstance(product, list) else [product]
+        short_names = product if isinstance(product, (list, tuple)) else [product]
         prod_str = " ".join(short_names)
 
         target_layers = []
@@ -657,6 +734,19 @@ def run_download_only(
             "No mode or product specified. Downloading ALL available OPERA products and layers."
         )
         url_cols = [c for c in df_opera.columns if c.startswith("Download URL")]
+
+    # Append HLS columns to the download queue if they exist
+    if needs_hls:
+        hls_cols = [
+            "HLS Download URL (B04/Red)",
+            "HLS Download URL (B03/Green)",
+            "HLS Download URL (B02/Blue)",
+            "HLS Download URL (B8A/B05/NIR)",
+            "HLS Download URL (Fmask)",
+        ]
+        for col in hls_cols:
+            if col in df_opera.columns:
+                url_cols.append(col)
 
     if df_opera.empty or not url_cols:
         logger.warning(
@@ -774,6 +864,13 @@ def run_mosaic_only(
         internal_bbox = auto_bbox
         logger.info(f"Auto-calculated bounding box from input files: {internal_bbox}")
 
+    # Export AOI to the mosaic output folder
+    if internal_bbox is not None:
+        try:
+            export_aoi(internal_bbox, output_dir)
+        except Exception as e:
+            logger.warning(f"Failed to export AOI bounding box in mosaic pipeline: {e}")
+
     # Calculate Master Grid
     crs_obj = pyproj.CRS.from_string(target_crs_proj4)
     target_res = 0.0002695 if crs_obj.is_geographic else 30
@@ -827,7 +924,7 @@ def run_mosaic_only(
                     logger.info(f"Mosaicking {short_name} - {layer} for pass {pass_id}")
 
                     # Use GDAL direct-to-disk for memory-heavy RTC products
-                    if "RTC" in short_name:
+                    if "RTC" in short_name or layer.startswith("HLS"):
                         gdal.PushErrorHandler("CPLQuietErrorHandler")
 
                         height, width = master_grid["shape"]
@@ -852,21 +949,31 @@ def run_mosaic_only(
                         if not opened_datasets:
                             continue
 
+                        out_type = (
+                            gdal.GDT_Int16
+                            if layer.startswith("HLS")
+                            else gdal.GDT_Float32
+                        )
+                        out_nodata = -9999 if layer.startswith("HLS") else np.nan
+
+                        # Ensure categorical Fmask data is not interpolated
+                        resample_alg = "near" if layer == "HLS-FMASK" else "bilinear"
+
                         warp_options = gdal.WarpOptions(
                             format="GTiff",
                             outputBounds=output_bounds,
                             width=width,
                             height=height,
                             dstSRS=master_grid["dst_crs"],
-                            resampleAlg="bilinear",
-                            dstNodata=np.nan,
+                            resampleAlg=resample_alg,
+                            dstNodata=out_nodata,
                             creationOptions=[
                                 "COMPRESS=DEFLATE",
                                 "NUM_THREADS=ALL_CPUS",
                             ],
                             warpOptions=["NUM_THREADS=ALL_CPUS"],
                             warpMemoryLimit=4096,
-                            outputType=gdal.GDT_Float32,
+                            outputType=out_type,
                         )
 
                         gdal.Warp(str(tmp_path), opened_datasets, options=warp_options)
@@ -945,7 +1052,7 @@ def run_mosaic_only(
 
                     # Apply the OPERA pixel-priority rules (Water beats Cloud, etc.)
                     mosaic, colormap, nodata = mosaic_opera(
-                        all_warped_ds, product=short_name, merge_args={}
+                        all_warped_ds, product=short_name, layer=layer, merge_args={}
                     )
 
                     # Split the synchronized CONF layer back out if we stacked it
@@ -1029,7 +1136,9 @@ def run_slope_filter_only(
 
         # Verify the credentials were retrieved
         if not username or not password:
-            raise RuntimeError("Could not find valid Earthdata credentials in ~/.netrc.")
+            raise RuntimeError(
+                "Could not find valid Earthdata credentials in ~/.netrc."
+            )
 
     except Exception as e:
         logger.error(f"[Pipeline] Earthdata authentication failed: {e}")
@@ -1416,6 +1525,101 @@ def run_rgb_task(vv_path, vh_path, rgb_path, skip_existing) -> float:
     return time.time() - t0
 
 
+def stack_hls_composite(red_path: Path, data_dir: Path, skip_existing: bool) -> None:
+    """
+    Stack individual HLS bands (Red, Green, Blue, NIR) into a 4-band composite.
+
+    Args:
+        red_path: Path to HLS-RED mosaic file
+        data_dir: Directory containing band files
+        skip_existing: Skip if composite already exists
+
+    Returns:
+        None
+    """
+    red_name = red_path.name
+    green_name = red_name.replace("HLS-RED", "HLS-GREEN")
+    blue_name = red_name.replace("HLS-RED", "HLS-BLUE")
+    nir_name = red_name.replace("HLS-RED", "HLS-NIR")
+
+    green_path = data_dir / green_name
+    blue_path = data_dir / blue_name
+    nir_path = data_dir / nir_name
+
+    # Verify all 4 spectral components exist
+    if not (green_path.exists() and blue_path.exists() and nir_path.exists()):
+        missing_bands = []
+        if not green_path.exists():
+            missing_bands.append("Green")
+        if not blue_path.exists():
+            missing_bands.append("Blue")
+        if not nir_path.exists():
+            missing_bands.append("NIR")
+        logger.warning(
+            f"Skipping 4-band HLS composite for {red_name}: "
+            f"Missing required band(s): {', '.join(missing_bands)}"
+        )
+        return
+
+    name_parts = red_name.split("_HLS-RED_")
+    if len(name_parts) == 2:
+        combined_name = f"{name_parts[0]}_HLS-4BAND_{name_parts[1]}"
+    else:
+        # Fallback (in case the naming convention ever changes)
+        combined_name = red_name.replace("HLS-RED_", "HLS-4BAND_")
+
+    combined_path = data_dir / combined_name
+
+    if skip_existing and combined_path.exists():
+        logger.info(
+            f"4-band HLS composite already exists, skipping generation: {combined_name}"
+        )
+        # Keep data directory clean by sweeping away old intermediate elements
+        for p in [red_path, green_path, blue_path, nir_path]:
+            p.unlink(missing_ok=True)
+        return
+
+    logger.info(f"Creating 4-band analytical HLS stacked composite: {combined_name}")
+    try:
+        with (
+            rasterio.open(red_path) as src_r,
+            rasterio.open(green_path) as src_g,
+            rasterio.open(blue_path) as src_b,
+            rasterio.open(nir_path) as src_inf,
+        ):
+            profile = src_r.profile.copy()
+            profile.update(
+                count=4,
+                compress="deflate",
+                tiled=True,
+                dtype=src_r.meta["dtype"],
+            )
+
+            tmp_combined = combined_path.with_suffix(".tmp.tif")
+            with rasterio.open(tmp_combined, "w", **profile) as dst:
+                dst.write(src_r.read(1), 1)
+                dst.write(src_g.read(1), 2)
+                dst.write(src_b.read(1), 3)
+                dst.write(src_inf.read(1), 4)
+
+                # Embed clean text band tags inside the geotiff container metadata
+                dst.set_band_description(1, "Red")
+                dst.set_band_description(2, "Green")
+                dst.set_band_description(3, "Blue")
+                dst.set_band_description(4, "NIR")
+
+        # Convert standard file to Cloud Optimized GeoTIFF (COG) in-place
+        save_gtiff_as_cog(tmp_combined, combined_path)
+        tmp_combined.unlink(missing_ok=True)
+
+        # Delete intermediate single-band components to optimize storage space
+        for p in [red_path, green_path, blue_path, nir_path]:
+            p.unlink(missing_ok=True)
+
+    except Exception as e:
+        logger.error(f"Failed to generate 4-band HLS composite for {red_name}: {e}")
+
+
 def generate_products(
     df_opera,
     mode,
@@ -1493,6 +1697,21 @@ def generate_products(
             logger.info(f"Product '{product}' is not currently supported. Exiting...")
             return
 
+    # Map HLS columns to standard layer naming so they are automatically mosaicked
+    hls_mapping = {
+        "HLS Download URL (B04/Red)": "HLS-RED",
+        "HLS Download URL (B03/Green)": "HLS-GREEN",
+        "HLS Download URL (B02/Blue)": "HLS-BLUE",
+        "HLS Download URL (B8A/B05/NIR)": "HLS-NIR",
+        "HLS Download URL (Fmask)": "HLS-FMASK",
+    }
+    for old_col, new_layer in hls_mapping.items():
+        new_col = f"Download URL {new_layer}"
+        if old_col in df_opera.columns:
+            df_opera.rename(columns={old_col: new_col}, inplace=True)
+        if new_col in df_opera.columns and new_layer not in layer_names:
+            layer_names.append(new_layer)
+
     # Filter to see if we have ANY data for the products required by this mode, if not, exit
     df_mode_data = df_opera[df_opera["Dataset"].isin(short_names)]
     if df_mode_data.empty:
@@ -1505,6 +1724,12 @@ def generate_products(
     data_dir = ensure_directory(mode_dir / "data")
     maps_dir = ensure_directory(mode_dir / "maps")
     layouts_dir = ensure_directory(mode_dir / "layouts")
+
+    # Export the AOI bounding box to the data folder
+    try:
+        export_aoi(bbox, data_dir)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI bounding box in generate_products: {e}")
 
     # Determine most common UTM CRS to warp all granules to across all dates
     target_crs_proj4 = get_master_crs(df_mode_data, mode)
@@ -1606,27 +1831,41 @@ def generate_products(
 
                         layout_date = ""
 
-                        # Use GDAL direct-to-disk mosaicking for RTC products to conserve RAM
-                        if short_name == "OPERA_L2_RTC-S1_V1":
+                        # Use GDAL direct-to-disk mosaicking for heavy continuous products (RTC and HLS) to conserve RAM
+                        if short_name == "OPERA_L2_RTC-S1_V1" or layer.startswith(
+                            "HLS"
+                        ):
                             mosaic_name = f"{short_name}_{layer}_{pass_id}_mosaic.tif"
                             mosaic_path = data_dir / mosaic_name
                             tmp_path = data_dir / f"tmp_{mosaic_name}"
 
-                            # Skip if RTC mosaic already exists
+                            # For HLS bands, check if 4-band composite already exists
+                            # If so, skip processing this individual band entirely
+                            if skip_existing and layer.startswith("HLS-"):
+                                composite_name = (
+                                    f"{short_name}_HLS-4BAND_{pass_id}_mosaic.tif"
+                                )
+                                composite_path = data_dir / composite_name
+                                if composite_path.exists():
+                                    logger.info(
+                                        f"4-band HLS composite already exists, skipping {layer} band processing: {composite_name}"
+                                    )
+                                    continue
+
+                            # Skip if mosaic already exists
                             if skip_existing and mosaic_path.exists():
                                 logger.info(
                                     f"Mosaic already exists, skipping: {mosaic_name}"
                                 )
                                 with rasterio.open(mosaic_path) as ds:
                                     mosaic_crs = ds.crs
-                                # Register it for differencing later!
                                 mosaic_index[short_name][layer][pass_id] = {
                                     "path": mosaic_path,
                                     "crs": mosaic_crs,
                                     "flight_dir": flight_dir,
                                 }
 
-                                if mode != "rtc-rgb":
+                                if mode != "rtc-rgb" and not layer.startswith("HLS"):
                                     future = ensure_executor().submit(
                                         run_plotting_task,
                                         maps_dir,
@@ -1648,7 +1887,7 @@ def generate_products(
                                 continue
 
                             logger.info(
-                                "Using GDAL direct-to-disk mosaicking for RTC to conserve RAM."
+                                f"Using GDAL direct-to-disk mosaicking for {layer} to conserve RAM and accelerate rendering."
                             )
 
                             gdal.PushErrorHandler("CPLQuietErrorHandler")
@@ -1665,7 +1904,14 @@ def generate_products(
                             # Open datasets to avoid GDALDatasetShadow errors
                             opened_datasets = []
                             for u in urls:
-                                ds = gdal.Open(u)
+                                # Stream remote HTTP links through GDAL's virtual file system
+                                gdal_url = (
+                                    f"/vsicurl/{u}"
+                                    if u.startswith("http")
+                                    and not u.startswith("/vsicurl/")
+                                    else u
+                                )
+                                ds = gdal.Open(gdal_url)
                                 if ds is None:
                                     logger.warning(
                                         f"GDAL failed to open URL (likely auth or missing file), skipping: {u}"
@@ -1681,6 +1927,19 @@ def generate_products(
                                 )
                                 continue
 
+                            # Define data type and nodata markers dynamically
+                            if layer.startswith("HLS"):
+                                out_type = gdal.GDT_Int16
+                                out_nodata = -9999
+                            else:
+                                out_type = gdal.GDT_Float32
+                                out_nodata = np.nan
+
+                            # Ensure categorical Fmask data is not interpolated
+                            resample_alg = (
+                                "near" if layer == "HLS-FMASK" else "bilinear"
+                            )
+
                             # Define Memory-Capped GDAL Warp Options
                             warp_options = gdal.WarpOptions(
                                 format="GTiff",
@@ -1688,15 +1947,15 @@ def generate_products(
                                 width=width,
                                 height=height,
                                 dstSRS=master_grid["dst_crs"],
-                                resampleAlg="bilinear",
-                                dstNodata=np.nan,
+                                resampleAlg=resample_alg,
+                                dstNodata=out_nodata,
                                 creationOptions=[
                                     "COMPRESS=DEFLATE",
                                     "NUM_THREADS=ALL_CPUS",
                                 ],
                                 warpOptions=["NUM_THREADS=ALL_CPUS"],
-                                warpMemoryLimit=4096,  # Cap RAM usage at 4GB
-                                outputType=gdal.GDT_Float32,
+                                warpMemoryLimit=4096,
+                                outputType=out_type,
                             )
 
                             # Execute Warp straight to disk
@@ -1720,12 +1979,12 @@ def generate_products(
                                         global_slope_mask is not None
                                         and arr.shape == global_slope_mask.shape
                                     ):
-                                        arr[global_slope_mask] = np.nan
+                                        arr[global_slope_mask] = out_nodata
                                     if (
                                         global_coastal_mask is not None
                                         and arr.shape == global_coastal_mask.shape
                                     ):
-                                        arr[~global_coastal_mask.values] = np.nan
+                                        arr[~global_coastal_mask.values] = out_nodata
                                     ds.write(arr, 1)
 
                             # Convert to COG
@@ -1739,8 +1998,8 @@ def generate_products(
                                 "flight_dir": flight_dir,
                             }
 
-                            # Submit Plotting Task (Skip individual layouts for rtc-rgb mode)
-                            if mode != "rtc-rgb":
+                            # Submit Plotting Task (Skip individual layouts for rtc-rgb mode and HLS optical bands)
+                            if mode != "rtc-rgb" and not layer.startswith("HLS"):
                                 future = ensure_executor().submit(
                                     run_plotting_task,
                                     maps_dir,
@@ -1760,7 +2019,7 @@ def generate_products(
                                 )
                                 plotting_futures.append(future)
 
-                            continue  # Skip the xarray processing loops entirely for RTC
+                            continue  # Skip the xarray processing loops entirely for RTC and HLS
 
                         # For non-RTC products, we load the granules into xarray DataArrays for filtering and mosaicking
                         mosaic_name = f"{short_name}_{layer}_{pass_id}_mosaic.tif"
@@ -2016,7 +2275,8 @@ def generate_products(
                                         if cmap_temp is not None:
                                             colormap = cmap_temp
 
-                            for i, da in enumerate(ds_group):
+                            def warp_single_dataset(i, da):
+                                """Warp a single dataset, optionally with CONF band."""
                                 da_warped = warp_dataarray_to_grid(
                                     da,
                                     master_grid,
@@ -2049,9 +2309,22 @@ def generate_products(
                                         [da_warped, conf_warped], dim="band"
                                     )
                                     combined = combined.assign_coords(band=[1, 2])
-                                    all_warped_ds.append(combined)
+                                    return combined
                                 else:
-                                    all_warped_ds.append(da_warped)
+                                    return da_warped
+
+                            # Warp datasets in parallel, preserving order
+                            with concurrent.futures.ThreadPoolExecutor(
+                                max_workers=5
+                            ) as warp_executor:
+                                all_warped_ds.extend(
+                                    warp_executor.map(
+                                        lambda idx_da: warp_single_dataset(
+                                            idx_da[0], idx_da[1]
+                                        ),
+                                        enumerate(ds_group),
+                                    )
+                                )
 
                         if not all_warped_ds:
                             continue
@@ -2063,7 +2336,10 @@ def generate_products(
                                 colormap = None
                         # Mosaic the datasets using the single global master grid setup
                         mosaic, _, nodata = mosaic_opera(
-                            all_warped_ds, product=short_name, merge_args={}
+                            all_warped_ds,
+                            product=short_name,
+                            layer=layer,
+                            merge_args={},
                         )
 
                         # Check if we have a synchronized CONF layer to split out
@@ -2216,6 +2492,7 @@ def generate_products(
                             driver="GTiff",
                             colormap=colormap,
                             nodata=nodata,
+                            dtype=mosaic.dtype,
                         )
 
                         # Translate the standard GTiff into a COG in-place
@@ -2235,7 +2512,7 @@ def generate_products(
                         logger.info(
                             f"Submitting background plotting task for {pass_id}..."
                         )
-                        if mode != "rtc-rgb":
+                        if mode != "rtc-rgb" and not layer.startswith("HLS"):
                             future = ensure_executor().submit(
                                 run_plotting_task,
                                 maps_dir,
@@ -2263,6 +2540,7 @@ def generate_products(
                                 driver="GTiff",
                                 colormap=conf_colormap,
                                 nodata=255,
+                                dtype=conf_mosaic.dtype,
                             )
 
                             # Translate the standard GTiff into a COG in-place
@@ -2273,7 +2551,7 @@ def generate_products(
                             )
 
                             # Submit Plotting Task for CONF
-                            if mode != "rtc-rgb":
+                            if mode != "rtc-rgb" and not layer.startswith("HLS"):
                                 future = ensure_executor().submit(
                                     run_plotting_task,
                                     maps_dir,
@@ -2450,26 +2728,42 @@ def generate_products(
     finally:
         logger.info("Waiting for all background tasks to finish...")
         executor.shutdown(wait=True)
-        if benchmark_stats is not None:
-            # Process Plotting Futures (Standard Mosaics)
-            total_plotting_time = sum(
-                f.result() for f in plotting_futures if f.exception() is None
-            )
-            total_diff_time = 0.0
 
-            # Process Differencing Pipeline Futures (Returns (diff_time, plot_time))
-            for f in differencing_futures:
-                if f.exception() is None:
-                    d_t, p_t = f.result()
-                    total_diff_time += d_t
-                    total_plotting_time += p_t
+    # Stack individual HLS bands into a 4-band GeoTIFF per pass (parallel)
+    logger.info("Stacking individual HLS bands into unified 4-band composites...")
+    hls_red_files = list(data_dir.glob("*_HLS-RED_*_mosaic.tif"))
 
-            # Update Stats
-            if "plotting" in benchmark_stats:
-                benchmark_stats["plotting"]["seq"] = total_plotting_time
-            if "differencing" in benchmark_stats:
-                benchmark_stats["differencing"]["seq"] = total_diff_time
+    if hls_red_files:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as hls_executor:
+            hls_futures = [
+                hls_executor.submit(
+                    stack_hls_composite, red_path, data_dir, skip_existing
+                )
+                for red_path in hls_red_files
+            ]
+            # Wait for all composites to finish
+            concurrent.futures.wait(hls_futures)
 
-        shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+    if benchmark_stats is not None:
+        # Process Plotting Futures (Standard Mosaics)
+        total_plotting_time = sum(
+            f.result() for f in plotting_futures if f.exception() is None
+        )
+        total_diff_time = 0.0
 
-        logger.info("All tasks complete.")
+        # Process Differencing Pipeline Futures (Returns (diff_time, plot_time))
+        for f in differencing_futures:
+            if f.exception() is None:
+                d_t, p_t = f.result()
+                total_diff_time += d_t
+                total_plotting_time += p_t
+
+        # Update Stats
+        if "plotting" in benchmark_stats:
+            benchmark_stats["plotting"]["seq"] = total_plotting_time
+        if "differencing" in benchmark_stats:
+            benchmark_stats["differencing"]["seq"] = total_diff_time
+
+    shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+
+    logger.info("All tasks complete.")

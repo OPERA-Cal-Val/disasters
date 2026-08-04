@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+from osgeo import ogr, osr
 
 logger = logging.getLogger(__name__)
 
@@ -259,3 +260,176 @@ def write_json(data: dict, filepath: Path) -> None:
     """
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def export_aoi(bbox: list[float], output_dir: Path) -> None:
+    """
+    Export the Area of Interest (AOI) bounding box as a GeoJSON and Shapefile.
+
+    Args:
+        bbox (list[float]): Bounding box in [S, N, W, E] format (miny, maxy, minx, maxx).
+        output_dir (Path): Directory to save the exported files.
+    """
+    logger = logging.getLogger(__name__)
+
+    miny, maxy, minx, maxx = bbox
+
+    # Validate EPSG:4326 coordinate ranges
+    if not (-90 <= miny <= 90 and -90 <= maxy <= 90):
+        raise ValueError(
+            f"Latitude values must be in [-90, 90]. Got miny={miny}, maxy={maxy}"
+        )
+    if not (-180 <= minx <= 180 and -180 <= maxx <= 180):
+        raise ValueError(
+            f"Longitude values must be in [-180, 180]. Got minx={minx}, maxx={maxx}"
+        )
+    if miny > maxy:
+        raise ValueError(f"miny ({miny}) cannot be greater than maxy ({maxy})")
+
+    # Filename formatting
+    def format_coord(val, pos_dir, neg_dir):
+        direction = pos_dir if val >= 0 else neg_dir
+        return f"{abs(val):.6f}{direction}".replace(".", "p")
+
+    lat_s = format_coord(miny, "N", "S")
+    lat_n = format_coord(maxy, "N", "S")
+    lon_w = format_coord(minx, "E", "W")
+    lon_e = format_coord(maxx, "E", "W")
+
+    name = f"AOI_{lat_s}_{lat_n}_{lon_w}_{lon_e}"
+
+    # Export as GeoJSON into /geojson
+    geojson_dir = output_dir / "geojson"
+    geojson_path = geojson_dir / f"{name}.geojson"
+
+    if minx > maxx:
+        geometry = {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [
+                    [
+                        [minx, miny],
+                        [180.0, miny],
+                        [180.0, maxy],
+                        [minx, maxy],
+                        [minx, miny],
+                    ]
+                ],
+                [
+                    [
+                        [-180.0, miny],
+                        [maxx, miny],
+                        [maxx, maxy],
+                        [-180.0, maxy],
+                        [-180.0, miny],
+                    ]
+                ],
+            ],
+        }
+    else:
+        geometry = {
+            "type": "Polygon",
+            "coordinates": [
+                [[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]
+            ],
+        }
+
+    geojson_data = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"name": "Area of Interest"},
+                "geometry": geometry,
+            }
+        ],
+    }
+
+    try:
+        geojson_dir.mkdir(parents=True, exist_ok=True)
+        with open(geojson_path, "w") as f:
+            json.dump(geojson_data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI GeoJSON: {e}")
+
+    # Export as Shapefile into /shp using GDAL/OGR natively
+    shp_dir = output_dir / "shp"
+    shp_path = shp_dir / f"{name}.shp"
+    ds = None
+    feature = None
+    try:
+        shp_dir.mkdir(parents=True, exist_ok=True)
+        driver = ogr.GetDriverByName("ESRI Shapefile")
+        if shp_path.exists():
+            driver.DeleteDataSource(str(shp_path))
+
+        ds = driver.CreateDataSource(str(shp_path))
+        if ds is None:
+            logger.warning(f"Could not create shapefile at {shp_path}")
+            return
+
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+
+        geom_type = ogr.wkbMultiPolygon if minx > maxx else ogr.wkbPolygon
+        layer = ds.CreateLayer("AOI", srs, geom_type)
+
+        field_defn = ogr.FieldDefn("Name", ogr.OFTString)
+        field_defn.SetWidth(50)
+        layer.CreateField(field_defn)
+
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetField("Name", "Area of Interest")
+
+        if minx > maxx:
+            multi = ogr.Geometry(ogr.wkbMultiPolygon)
+
+            # Western half
+            ring1 = ogr.Geometry(ogr.wkbLinearRing)
+            for pt in [
+                (minx, miny),
+                (180.0, miny),
+                (180.0, maxy),
+                (minx, maxy),
+                (minx, miny),
+            ]:
+                ring1.AddPoint_2D(*pt)
+            poly1 = ogr.Geometry(ogr.wkbPolygon)
+            poly1.AddGeometry(ring1)
+            multi.AddGeometry(poly1)
+
+            # Eastern half
+            ring2 = ogr.Geometry(ogr.wkbLinearRing)
+            for pt in [
+                (-180.0, miny),
+                (maxx, miny),
+                (maxx, maxy),
+                (-180.0, maxy),
+                (-180.0, miny),
+            ]:
+                ring2.AddPoint_2D(*pt)
+            poly2 = ogr.Geometry(ogr.wkbPolygon)
+            poly2.AddGeometry(ring2)
+            multi.AddGeometry(poly2)
+
+            feature.SetGeometry(multi)
+        else:
+            ring = ogr.Geometry(ogr.wkbLinearRing)
+            for pt in [
+                (minx, miny),
+                (maxx, miny),
+                (maxx, maxy),
+                (minx, maxy),
+                (minx, miny),
+            ]:
+                ring.AddPoint_2D(*pt)
+            poly = ogr.Geometry(ogr.wkbPolygon)
+            poly.AddGeometry(ring)
+            feature.SetGeometry(poly)
+
+        layer.CreateFeature(feature)
+    except Exception as e:
+        logger.warning(f"Failed to export AOI shapefile: {e}")
+    finally:
+        feature = None
+        ds = None

@@ -215,6 +215,12 @@ def _parse_zoom_bbox(zoom_bbox: str) -> list[float]:
     default=False,
     help="Skip generation of files that already exist in the output directory.",
 )
+@click.option(
+    "--no-hls",
+    is_flag=True,
+    default=False,
+    help="Disable searching and downloading of HLS source scenes (Red, Green, Blue, NIR, Fmask).",
+)
 def run(
     bbox: str,
     zoom_bbox: Optional[str],
@@ -236,6 +242,7 @@ def run(
     no_mask: bool,
     compute_cloudiness: bool,
     skip_existing: bool,
+    no_hls: bool,
 ) -> None:
     """Run the disaster pipeline (end-to-end)."""
     if mode and product:
@@ -291,6 +298,7 @@ def run(
         no_mask=no_mask,
         compute_cloudiness=compute_cloudiness,
         skip_existing=skip_existing,
+        no_hls=no_hls,
     )
 
     mode_dir = run_pipeline(cfg)
@@ -364,6 +372,12 @@ def run(
     default=False,
     help="Enable HLS cloud cover calculation.",
 )
+@click.option(
+    "--no-hls",
+    is_flag=True,
+    default=False,
+    help="Disable searching for HLS source scenes.",
+)
 def search(
     bbox: str,
     output_dir: Path,
@@ -373,6 +387,7 @@ def search(
     product: tuple[str, ...],
     satellites: tuple[str, ...],
     compute_cloudiness: bool,
+    no_hls: bool,
 ) -> None:
     """Query OPERA catalog and save metadata without downloading imagery."""
     if mode and product:
@@ -402,6 +417,7 @@ def search(
         product=list(product) if product else None,
         satellites=list(satellites) if satellites else None,
         compute_cloudiness=compute_cloudiness,
+        no_hls=no_hls,
     )
 
     if out_dir:
@@ -466,6 +482,12 @@ def search(
     default=False,
     help="Enable HLS cloud cover calculation. This may significantly increase runtime, especially for large AOIs or wide date ranges.",
 )
+@click.option(
+    "--no-hls",
+    is_flag=True,
+    default=False,
+    help="Disable downloading of HLS source scenes to save bandwidth and disk space.",
+)
 def download(
     bbox: str,
     output_dir: Path,
@@ -474,6 +496,7 @@ def download(
     mode: Optional[str],
     product: tuple[str, ...],
     compute_cloudiness: bool,
+    no_hls: bool,
 ) -> None:
     """Download OPERA granules over an AOI/time window for local use."""
     if mode and product:
@@ -502,6 +525,7 @@ def download(
         mode=mode,
         product=list(product) if product else None,
         compute_cloudiness=compute_cloudiness,
+        no_hls=no_hls,
     )
 
     if out_dir:
