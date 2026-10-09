@@ -26,7 +26,8 @@ def reclassify_snow_ice_as_water(
 
     Args:
         DS (list): List of rioxarray datasets (BWTR layers).
-        conf_DS (list): List of rioxarray datasets (CONF layers).
+        conf_DS (list): List of rioxarray datasets (CONF layers), aligned with DS.
+            Granules whose entry is None are returned unchanged.
 
     Returns:
         tuple: List of updated rioxarray datasets with 252 reclassified as 1, and the colormap.
@@ -54,6 +55,11 @@ def reclassify_snow_ice_as_water(
     updated_list = []
 
     for da_data, da_conf in zip(DS, conf_DS):
+        # Without a CONF layer we cannot tell real snow/ice from water, so leave as-is
+        if da_conf is None:
+            updated_list.append(da_data)
+            continue
+
         # Get the original data values
         data_values = da_data.values.copy()
         conf_values = da_conf.values
@@ -90,6 +96,7 @@ def filter_by_date_and_confidence(
     DS_conf: Optional[list] = None,
     confidence_threshold: Optional[float] = None,
     fill_value: Optional[float] = None,
+    drop_missing_dates: bool = False,
 ) -> Tuple[list, Optional[dict]]:
     """
     Filters each data xarray in `DS` based on date threshold and optional confidence threshold.
@@ -97,15 +104,23 @@ def filter_by_date_and_confidence(
 
     Args:
         DS (list): List of data granules (e.g., VEG-DIST-STATUS tiles).
-        DS_dates (list): List of corresponding date granules.
+        DS_dates (list | None): Date granules aligned with `DS`. Entries may be None
+            where the date layer is missing; None for the whole list means none have one.
         date_threshold (int): Pixels with dates >= this value are retained.
-        DS_conf (list, optional): List of confidence rasters corresponding to `DS`. Default is None.
+        DS_conf (list, optional): Confidence rasters aligned with `DS` (entries may be None,
+            in which case no confidence mask is applied to that granule). Default is None.
         confidence_threshold (float, optional): Pixels with confidence >= this value are retained.
         fill_value (number, optional): Value to fill where condition is not met.
+        drop_missing_dates (bool): If True, granules without a date layer are excluded
+            (used when a filter date is requested, since they cannot be filtered).
+            If False, they only have "no disturbance" pixels masked. Default is False.
 
     Returns:
-        tuple: list of xr.DataArray filtered data granules, and the original colormap.
+        tuple: list of xr.DataArray filtered data granules (possibly shorter than `DS`
+            if granules were dropped), and the original colormap.
     """
+    if DS_dates is None:
+        DS_dates = [None] * len(DS)
     assert len(DS) == len(DS_dates), "DS and DS_dates must be same length"
     if DS_conf is not None:
         assert len(DS_conf) == len(DS), "DS_conf must match DS in length"
@@ -127,14 +142,25 @@ def filter_by_date_and_confidence(
         # Create a mask that excludes "No Data" and "No Disturbance" values
         valid_data_mask = da_data != 0
 
-        # Create date threshold mask
-        date_threshold_mask = da_date >= date_threshold
-
-        # Combine masks
-        date_mask = valid_data_mask & date_threshold_mask
+        if da_date is None:
+            if drop_missing_dates:
+                logger.warning(
+                    f"Granule {i + 1}/{len(DS)} has no VEG-DIST-DATE layer; "
+                    "excluding it because a filter date was requested."
+                )
+                continue
+            date_mask = valid_data_mask
+        else:
+            # Create date threshold mask and combine
+            date_threshold_mask = da_date >= date_threshold
+            date_mask = valid_data_mask & date_threshold_mask
 
         # Optional confidence mask
-        if DS_conf is not None and confidence_threshold is not None:
+        if (
+            DS_conf is not None
+            and DS_conf[i] is not None
+            and confidence_threshold is not None
+        ):
             conf_layer = DS_conf[i]
             logger.info(f"Confidence layer shape: {conf_layer.shape}")
             total_pixels = conf_layer.size

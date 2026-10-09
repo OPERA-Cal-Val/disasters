@@ -110,6 +110,47 @@ class PipelineConfig:
     no_hls: bool = False
 
 
+def aligned_layer_links(
+    df: pd.DataFrame, url_column: str, aux_columns: Sequence[str] = ()
+) -> tuple[list[str], dict[str, list[str | None] | None]]:
+    """
+    Extract primary-layer URLs and auxiliary-layer URLs aligned row-by-row.
+
+    Each returned auxiliary list has the same length and order as the primary list,
+    with None where a granule is missing that auxiliary file. This keeps auxiliary
+    layers (CONF, VEG-DIST-DATE, ...) paired with the granule they belong to.
+
+    Args:
+        df (pd.DataFrame): Metadata rows for a single pass.
+        url_column (str): Column holding the primary layer URLs (e.g., "Download URL WTR").
+        aux_columns (Sequence[str]): Columns holding auxiliary layer URLs.
+
+    Returns:
+        tuple: (primary URLs, {aux column: aligned URL list, or None if the column is absent}).
+    """
+    rows = df[df[url_column].notna()]
+    urls = rows[url_column].tolist()
+    aux_links = {}
+    for col in aux_columns:
+        if col in rows.columns:
+            aux_links[col] = [v if pd.notna(v) else None for v in rows[col]]
+        else:
+            aux_links[col] = None
+    return urls, aux_links
+
+
+def stack_with_conf(da: xr.DataArray, conf_da: xr.DataArray | None) -> xr.DataArray:
+    """
+    Stack a CONF layer as band 2 beneath a data layer so mosaicking selects both together.
+    A granule without CONF gets a band filled with 255 (CONF nodata), so every granule in
+    a pass has the same band count.
+    """
+    if conf_da is None:
+        conf_da = xr.full_like(da, 255)
+    combined = xr.concat([da, conf_da], dim="band")
+    return combined.assign_coords(band=[1, 2])
+
+
 def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], str]:
     """
     Calculates the global bounding box [S, N, W, E] and most common CRS
@@ -521,7 +562,11 @@ def run_search_only(
     # If mode or product is provided, calculate how many of those found granules actually apply
     if mode:
         if mode == "flood":
-            short_names = ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1", "OPERA_L3_DSWX-NI_V1"]
+            short_names = [
+                "OPERA_L3_DSWX-HLS_V1",
+                "OPERA_L3_DSWX-S1_V1",
+                "OPERA_L3_DSWX-NI_V1",
+            ]
         elif mode == "fire":
             short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ALERT-S1_V1"]
         elif mode == "landslide":
@@ -664,7 +709,11 @@ def run_download_only(
 
         # Define target datasets and primary + auxiliary layers
         if mode == "flood":
-            short_names = ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1", "OPERA_L3_DSWX-NI_V1"]
+            short_names = [
+                "OPERA_L3_DSWX-HLS_V1",
+                "OPERA_L3_DSWX-S1_V1",
+                "OPERA_L3_DSWX-NI_V1",
+            ]
             target_layers = ["WTR", "BWTR", "CONF"]
         elif mode == "fire":
             short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ALERT-S1_V1"]
@@ -917,7 +966,10 @@ def run_mosaic_only(
                     if url_column not in cluster_df.columns:
                         continue
 
-                    urls = cluster_df[url_column].dropna().tolist()
+                    conf_column = "Download URL CONF"
+                    urls, aux_links = aligned_layer_links(
+                        cluster_df, url_column, [conf_column]
+                    )
                     if not urls:
                         continue
 
@@ -987,28 +1039,13 @@ def run_mosaic_only(
                         cleanup_temp_file(tmp_path)
                         continue
 
-                    # xarray/rioxarray for rule-based DSWx/DIST products
-                    # Look for a CONF layer to stack for synchronized pixel selection
-                    conf_column = "Download URL CONF"
-                    conf_urls = (
-                        cluster_df[conf_column].dropna().tolist()
-                        if conf_column in cluster_df.columns
-                        else []
+                    # xarray/rioxarray for rule-based DSWx/DIST products.
+                    # Load CONF (aligned per granule) to stack for synchronized pixel selection.
+                    DS, conf_DS, _ = compile_and_load_data(
+                        urls,
+                        conf_layer_links=aux_links[conf_column],
+                        benchmark_stats=None,
                     )
-
-                    # Trick `compile_and_load_data` into returning the CONF datasets
-                    if conf_urls:
-                        DS, conf_DS = compile_and_load_data(
-                            urls,
-                            mode="flood",
-                            conf_layer_links=conf_urls,
-                            benchmark_stats=None,
-                        )
-                    else:
-                        DS = compile_and_load_data(
-                            urls, mode="other", benchmark_stats=None
-                        )
-                        conf_DS = None
 
                     all_warped_ds = []
                     warp_temp_dir = output_dir / ".warp_cache"
@@ -1025,23 +1062,23 @@ def run_mosaic_only(
                                 password=password,
                             )
 
-                            # If a CONF layer exists, warp it and concatenate it underneath the main layer
+                            # If the pass has a CONF layer, warp it and stack it underneath the main layer.
                             # This ensures mosaic_opera brings the exact matching CONF pixel along with the WTR pixel.
-                            if conf_DS is not None and i < len(conf_DS):
-                                conf_warped = warp_dataarray_to_grid(
-                                    conf_DS[i],
-                                    master_grid,
-                                    resampling_method,
-                                    warp_temp_dir,
-                                    temp_prefix=f"{short_name}_{layer}_{pass_id}_conf_{i}",
-                                    username=username,
-                                    password=password,
+                            if conf_DS is not None:
+                                conf_warped = None
+                                if conf_DS[i] is not None:
+                                    conf_warped = warp_dataarray_to_grid(
+                                        conf_DS[i],
+                                        master_grid,
+                                        resampling_method,
+                                        warp_temp_dir,
+                                        temp_prefix=f"{short_name}_{layer}_{pass_id}_conf_{i}",
+                                        username=username,
+                                        password=password,
+                                    )
+                                all_warped_ds.append(
+                                    stack_with_conf(da_warped, conf_warped)
                                 )
-                                combined = xr.concat(
-                                    [da_warped, conf_warped], dim="band"
-                                )
-                                combined = combined.assign_coords(band=[1, 2])
-                                all_warped_ds.append(combined)
                             else:
                                 all_warped_ds.append(da_warped)
                         except Exception as e:
@@ -1098,7 +1135,8 @@ def run_mosaic_only(
                             da.close()
                     if conf_DS is not None:
                         for da in conf_DS:
-                            da.close()
+                            if da is not None:
+                                da.close()
 
     return output_dir
 
@@ -1666,7 +1704,11 @@ def generate_products(
     # Define short names and layer names based on mode or product FIRST
     if mode:
         if mode == "flood":
-            short_names = ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1", "OPERA_L3_DSWX-NI_V1"]
+            short_names = [
+                "OPERA_L3_DSWX-HLS_V1",
+                "OPERA_L3_DSWX-S1_V1",
+                "OPERA_L3_DSWX-NI_V1",
+            ]
             layer_names = ["WTR", "BWTR"]
         elif mode == "fire":
             short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ALERT-S1_V1"]
@@ -1811,7 +1853,16 @@ def generate_products(
                         start_time_min = cluster_df["Start Time"].min()
                         raw_pass_id = start_time_min.strftime("%Y%m%dT%H%M")
 
-                        urls = cluster_df[url_column].dropna().tolist()
+                        # Primary URLs plus auxiliary URLs aligned row-by-row (None where missing)
+                        urls, aux_links = aligned_layer_links(
+                            cluster_df,
+                            url_column,
+                            [
+                                "Download URL CONF",
+                                "Download URL VEG-DIST-DATE",
+                                "Download URL VEG-DIST-CONF",
+                            ],
+                        )
                         if not urls:
                             continue
 
@@ -2099,25 +2150,21 @@ def generate_products(
                         DS, conf_DS, date_DS = None, None, None
                         conf_colormap = None
 
-                        if mode == "fire":
-                            date_column = "Download URL VEG-DIST-DATE"
-                            conf_column = "Download URL VEG-DIST-CONF"
-                            date_layer_links = (
-                                cluster_df[date_column].dropna().tolist()
-                                if date_column in cluster_df.columns
-                                else []
-                            )
-                            conf_layer_links = (
-                                cluster_df[conf_column].dropna().tolist()
-                                if conf_column in cluster_df.columns
-                                else []
-                            )
+                        is_dist_filtered = mode == "fire" or (
+                            mode == "landslide"
+                            and short_name.startswith("OPERA_L3_DIST")
+                        )
 
-                            DS, date_DS, conf_DS = compile_and_load_data(
+                        # Load primary and auxiliary layers, keeping each aux entry paired with its granule
+                        if is_dist_filtered:
+                            DS, conf_DS, date_DS = compile_and_load_data(
                                 urls,
-                                mode,
-                                conf_layer_links=conf_layer_links,
-                                date_layer_links=date_layer_links,
+                                conf_layer_links=aux_links[
+                                    "Download URL VEG-DIST-CONF"
+                                ],
+                                date_layer_links=aux_links[
+                                    "Download URL VEG-DIST-DATE"
+                                ],
                                 benchmark_stats=benchmark_stats,
                                 username=username,
                                 password=password,
@@ -2129,127 +2176,65 @@ def generate_products(
                                 date_threshold = 0
                                 layout_date = "All Dates"
 
-                        elif mode == "landslide":
-                            if short_name == "OPERA_L3_DIST-ALERT-HLS_V1":
-                                date_column = "Download URL VEG-DIST-DATE"
-                                conf_column = "Download URL VEG-DIST-CONF"
-                                date_layer_links = (
-                                    cluster_df[date_column].dropna().tolist()
-                                    if date_column in cluster_df.columns
-                                    else []
-                                )
-                                conf_layer_links = (
-                                    cluster_df[conf_column].dropna().tolist()
-                                    if conf_column in cluster_df.columns
-                                    else []
-                                )
-
-                                DS, date_DS, conf_DS = compile_and_load_data(
-                                    urls,
-                                    mode,
-                                    conf_layer_links=conf_layer_links,
-                                    date_layer_links=date_layer_links,
-                                    benchmark_stats=benchmark_stats,
-                                    username=username,
-                                    password=password,
-                                )
-                                if filter_date:
-                                    date_threshold = compute_date_threshold(filter_date)
-                                    layout_date = str(filter_date)
-                                else:
-                                    date_threshold = 0
-                                    layout_date = "All Dates"
-
                         elif mode == "flood":
-                            conf_column = "Download URL CONF"
-                            conf_layer_links = (
-                                cluster_df[conf_column].dropna().tolist()
-                                if conf_column in cluster_df.columns
-                                else []
+                            DS, conf_DS, _ = compile_and_load_data(
+                                urls,
+                                conf_layer_links=aux_links["Download URL CONF"],
+                                benchmark_stats=benchmark_stats,
+                                username=username,
+                                password=password,
                             )
-                            if not conf_layer_links:
+                            if conf_DS is None:
                                 logger.warning(
                                     f"No CONF URLs found for {short_name} on {pass_id}"
                                 )
-                                conf_DS = None
-                                DS = compile_and_load_data(
-                                    urls,
-                                    mode,
-                                    benchmark_stats=benchmark_stats,
-                                    username=username,
-                                    password=password,
-                                )
                             else:
-                                DS, conf_DS = compile_and_load_data(
-                                    urls,
-                                    mode,
-                                    conf_layer_links=conf_layer_links,
-                                    benchmark_stats=benchmark_stats,
-                                    username=username,
-                                    password=password,
+                                first_conf = next(
+                                    (c for c in conf_DS if c is not None), None
                                 )
-                                if conf_DS and len(conf_DS) > 0:
-                                    try:
-                                        conf_colormap = get_image_colormap(conf_DS[0])
-                                    except Exception:
-                                        pass
+                                try:
+                                    conf_colormap = get_image_colormap(first_conf)
+                                except Exception:
+                                    pass
 
-                        # Group loaded DataArrays by CRS (UTM Zone)
-                        crs_groups = defaultdict(list)
-                        conf_groups = defaultdict(list)
-                        date_groups = defaultdict(list)
-
-                        # Ensure all lists are non-empty before zipping
+                        # Ensure the primary list is non-empty before grouping
                         if not DS:
                             continue
 
-                        # Determine auxiliary list lengths for zipping
-                        aux_lists = []
-                        if conf_DS is not None and mode == "flood":
-                            aux_lists.append(conf_DS)
-                        elif conf_DS is not None and mode in ["fire", "landslide"]:
-                            aux_lists.extend([date_DS, conf_DS])
+                        # Group loaded (data, conf, date) triples by CRS (UTM Zone)
+                        n_granules = len(DS)
+                        conf_list = (
+                            conf_DS if conf_DS is not None else [None] * n_granules
+                        )
+                        date_list = (
+                            date_DS if date_DS is not None else [None] * n_granules
+                        )
+                        crs_groups = defaultdict(list)
+                        for da_data, da_conf, da_date in zip(DS, conf_list, date_list):
+                            try:
+                                crs_str = str(da_data.rio.crs)
+                            except AttributeError:
+                                continue
+                            crs_groups[crs_str].append((da_data, da_conf, da_date))
 
-                        if aux_lists:
-                            # Zip DS with auxiliary layers (conf_DS, date_DS)
-                            for i, (da_data, *aux_data) in enumerate(
-                                zip(DS, *aux_lists)
-                            ):
-                                try:
-                                    crs_str = str(da_data.rio.crs)
-                                except AttributeError:
-                                    continue
-                                crs_groups[crs_str].append(da_data)
-                                if mode == "flood":
-                                    conf_groups[crs_str].append(aux_data[0])
-                                elif mode in [
-                                    "fire",
-                                    "landslide",
-                                ] and short_name.startswith("OPERA_L3_DIST"):
-                                    date_groups[crs_str].append(aux_data[0])
-                                    conf_groups[crs_str].append(aux_data[1])
-                        else:
-                            for i, da_data in enumerate(DS):
-                                try:
-                                    crs_str = str(da_data.rio.crs)
-                                except AttributeError:
-                                    continue
-                                crs_groups[crs_str].append(da_data)
+                        # Stack CONF under WTR for every granule in the pass if any granule has CONF,
+                        # so all granules (across CRS groups) have the same band count when mosaicked.
+                        stack_conf = (
+                            mode == "flood" and layer == "WTR" and conf_DS is not None
+                        )
 
                         all_warped_ds = []
                         colormap = None
                         warp_temp_dir = data_dir / ".warp_cache"
 
                         # Iterate through each CRS group to process and mosaic
-                        for crs_str, ds_group in crs_groups.items():
-                            current_conf_DS = conf_groups.get(crs_str)
-                            current_date_DS = date_groups.get(crs_str)
+                        for crs_str, group in crs_groups.items():
+                            ds_group = [g[0] for g in group]
+                            current_conf_DS = [g[1] for g in group]
+                            current_date_DS = [g[2] for g in group]
 
                             # Filtering/Reclassification (Per CRS Group)
-                            if mode == "fire" or (
-                                mode == "landslide"
-                                and short_name.startswith("OPERA_L3_DIST")
-                            ):
+                            if is_dist_filtered:
                                 ds_group, cmap_temp = filter_by_date_and_confidence(
                                     ds_group,
                                     current_date_DS,
@@ -2257,6 +2242,7 @@ def generate_products(
                                     DS_conf=current_conf_DS,
                                     confidence_threshold=0,
                                     fill_value=None,
+                                    drop_missing_dates=bool(filter_date),
                                 )
                                 if cmap_temp is not None:
                                     colormap = cmap_temp
@@ -2265,15 +2251,13 @@ def generate_products(
                                     reclassify_snow_ice
                                     and short_name == "OPERA_L3_DSWX-HLS_V1"
                                     and layer in ["BWTR", "WTR"]
+                                    and any(c is not None for c in current_conf_DS)
                                 ):
-                                    if current_conf_DS is not None:
-                                        ds_group, cmap_temp = (
-                                            reclassify_snow_ice_as_water(
-                                                ds_group, current_conf_DS
-                                            )
-                                        )
-                                        if cmap_temp is not None:
-                                            colormap = cmap_temp
+                                    ds_group, cmap_temp = reclassify_snow_ice_as_water(
+                                        ds_group, current_conf_DS
+                                    )
+                                    if cmap_temp is not None:
+                                        colormap = cmap_temp
 
                             def warp_single_dataset(i, da):
                                 """Warp a single dataset, optionally with CONF band."""
@@ -2287,16 +2271,14 @@ def generate_products(
                                     password=password,
                                 )
 
-                                # If processing WTR/BWTR, stack CONF as a second band to sync pixel selection
-                                if (
-                                    mode == "flood"
-                                    and layer == "WTR"
-                                    and current_conf_DS is not None
-                                    and i < len(current_conf_DS)
-                                ):
-                                    conf_da = current_conf_DS[i]
+                                # If processing WTR, stack CONF as a second band to sync pixel selection
+                                if not stack_conf:
+                                    return da_warped
+
+                                conf_warped = None
+                                if current_conf_DS[i] is not None:
                                     conf_warped = warp_dataarray_to_grid(
-                                        conf_da,
+                                        current_conf_DS[i],
                                         master_grid,
                                         resampling_method,
                                         warp_temp_dir,
@@ -2304,14 +2286,7 @@ def generate_products(
                                         username=username,
                                         password=password,
                                     )
-                                    # Concatenate into a single 2-band dataset
-                                    combined = xr.concat(
-                                        [da_warped, conf_warped], dim="band"
-                                    )
-                                    combined = combined.assign_coords(band=[1, 2])
-                                    return combined
-                                else:
-                                    return da_warped
+                                return stack_with_conf(da_warped, conf_warped)
 
                             # Warp datasets in parallel, preserving order
                             with concurrent.futures.ThreadPoolExecutor(
@@ -2400,9 +2375,8 @@ def generate_products(
                                     )
 
                                     # Load DSWx granules into xarray
-                                    dswx_ds_list = compile_and_load_data(
+                                    dswx_ds_list, _, _ = compile_and_load_data(
                                         dswx_urls,
-                                        mode="other",
                                         benchmark_stats=benchmark_stats,
                                         username=username,
                                         password=password,
@@ -2571,16 +2545,11 @@ def generate_products(
                                 )
                                 plotting_futures.append(future)
 
-                        # Explicitly close xarray file
-                        if DS is not None:
-                            for da in DS:
-                                da.close()
-                        if conf_DS is not None:
-                            for da in conf_DS:
-                                da.close()
-                        if date_DS is not None:
-                            for da in date_DS:
-                                da.close()
+                        # Explicitly close xarray files (aux lists may contain None for missing layers)
+                        for da_list in (DS, conf_DS, date_DS):
+                            for da in da_list or []:
+                                if da is not None:
+                                    da.close()
 
             shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
 
