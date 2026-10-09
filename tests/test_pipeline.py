@@ -351,6 +351,7 @@ def test_run_slope_filter_only_processes_nested_tifs(
     output_dir = tmp_path / "output"
 
     mock_earthaccess_auth.return_value.authenticated = True
+    mock_auth.return_value = ("user", "pass")
     mock_scan.return_value = pd.DataFrame()
     mock_spatial.return_value = ([0, 1, 0, 1], "EPSG:4326")
     mock_grid.return_value = {
