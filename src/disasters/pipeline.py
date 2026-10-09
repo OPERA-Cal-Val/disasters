@@ -570,7 +570,12 @@ def run_search_only(
         elif mode == "fire":
             short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L3_DIST-ALERT-S1_V1"]
         elif mode == "landslide":
-            short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L2_RTC-S1_V1"]
+            # DSWx-HLS is used to mask water-related disturbance in DIST-ALERT-HLS
+            short_names = [
+                "OPERA_L3_DIST-ALERT-HLS_V1",
+                "OPERA_L2_RTC-S1_V1",
+                "OPERA_L3_DSWX-HLS_V1",
+            ]
         elif mode == "rtc-rgb":
             short_names = ["OPERA_L2_RTC-S1_V1"]
         elif mode == "earthquake":
@@ -724,7 +729,12 @@ def run_download_only(
                 "VEG-DIST-CONF",
             ]
         elif mode == "landslide":
-            short_names = ["OPERA_L3_DIST-ALERT-HLS_V1", "OPERA_L2_RTC-S1_V1"]
+            # DSWx-HLS WTR is needed to mask water-related disturbance in DIST-ALERT-HLS
+            short_names = [
+                "OPERA_L3_DIST-ALERT-HLS_V1",
+                "OPERA_L2_RTC-S1_V1",
+                "OPERA_L3_DSWX-HLS_V1",
+            ]
             target_layers = [
                 "VEG-ANOM-MAX",
                 "VEG-DIST-STATUS",
@@ -732,6 +742,7 @@ def run_download_only(
                 "VEG-DIST-CONF",
                 "RTC-VV",
                 "RTC-VH",
+                "WTR",
             ]
         elif mode == "rtc-rgb":
             short_names = ["OPERA_L2_RTC-S1_V1"]
@@ -2350,12 +2361,13 @@ def generate_products(
                                     "Coastal mask shape mismatches mosaic. Skipping coastal filter."
                                 )
 
-                        # Mask DIST-HLS by corresponding DSWx-HLS to remove water-related disturbance (e.g., water banklines)
+                        # Mask DIST-HLS by corresponding DSWx-HLS to remove water-related disturbance (e.g., water banklines).
+                        # Like the coastal mask, this runs unless masking is disabled with --no-mask.
                         if (
                             mode == "landslide"
                             and short_name == "OPERA_L3_DIST-ALERT-HLS_V1"
                         ):
-                            if slope_threshold is not None:
+                            if not no_mask:
                                 # Find DSWx-HLS WTR granules for the same datetime
                                 dswx_rows = df_opera[
                                     (df_opera["Dataset"] == "OPERA_L3_DSWX-HLS_V1")
@@ -2457,7 +2469,7 @@ def generate_products(
                                     )
                             else:
                                 logger.info(
-                                    "[Water Mask] No slope threshold (-st) specified. Skipping water-related disturbance filtering."
+                                    "[Water Mask] Masking disabled (--no-mask). Skipping water-related disturbance filtering."
                                 )
 
                         array_to_image(
