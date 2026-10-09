@@ -644,15 +644,18 @@ def merge_first_valid(
     """
     Element-wise merge method for continuous integer imagery.
     Uses Rasterio's mask inputs to perform a copy-first-valid operation.
-    """
-    # Target pixels in old_data to update are where merged_mask is True (currently nodata)
-    # and new_mask is False (new valid data exists)
-    update_mask = merged_mask & ~new_mask
 
-    old_data[update_mask] = new_data[update_mask]
+    Validity is decided by the first band only and applied to all bands, so stacked
+    auxiliary bands (e.g., CONF under WTR) always come from the same granule as band 1.
+    """
+    # Target pixels to update are where band 1 is currently nodata in the merged
+    # output and the new granule has valid band-1 data
+    update_mask = merged_mask[0] & ~new_mask[0]
+
+    old_data[:, update_mask] = new_data[:, update_mask]
 
     # Update the merged mask so subsequent granules know these pixels are now valid
-    merged_mask[update_mask] = False
+    merged_mask[:, update_mask] = False
 
     return old_data
 

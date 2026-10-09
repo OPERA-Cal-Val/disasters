@@ -156,3 +156,22 @@ def test_stacked_conf_follows_winning_granule_with_missing_conf(tmp_path):
     # Water outranks not-water, and the CONF band comes from the same (winning) granule
     assert int(mosaic.isel(band=0).values.min()) == 1
     assert int(mosaic.isel(band=1).values.min()) == 1
+
+
+def test_first_valid_fallback_keeps_conf_with_wtr(tmp_path):
+    # Class 8 is not in the DSWx priority table, which triggers the first-valid fallback.
+    # Granule A: WTR fill (255) but a valid CONF. Granule B: WTR=8 with CONF=30.
+    wtr_a = _load(_write_tif(tmp_path / "a_WTR.tif", 255))
+    conf_a = _load(_write_tif(tmp_path / "a_CONF.tif", 0))
+    wtr_b = _load(_write_tif(tmp_path / "b_WTR.tif", 8))
+    conf_b = _load(_write_tif(tmp_path / "b_CONF.tif", 30))
+
+    mosaic, _, _ = mosaic_opera(
+        [stack_with_conf(wtr_a, conf_a), stack_with_conf(wtr_b, conf_b)],
+        product="OPERA_L3_DSWX-NI_V1",
+        layer="WTR",
+    )
+
+    # Both bands must come from granule B (the only one with valid WTR)
+    assert int(mosaic.isel(band=0).values.min()) == 8
+    assert int(mosaic.isel(band=1).values.min()) == 30
