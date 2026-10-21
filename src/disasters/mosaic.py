@@ -413,7 +413,6 @@ with rasterio.open(sys.argv[3], "w", **metadata) as dst:
 
 def compile_and_load_data(
     data_layer_links,
-    mode,
     conf_layer_links=None,
     date_layer_links=None,
     benchmark_stats=None,
@@ -423,20 +422,34 @@ def compile_and_load_data(
     """
     Compile and load data from the provided layer links for mosaicking using multithreading.
 
+    Auxiliary link lists must be aligned element-by-element with `data_layer_links`
+    (i.e., built from the same metadata rows). Use None for a granule whose auxiliary
+    file is missing; the corresponding loaded entry will also be None.
+
     Args:
         data_layer_links (list): List of URLs corresponding to the OPERA data layers to mosaic.
-        mode (str): Mode of operation, e.g., "flood", "fire", "landslide", "earthquake".
-        conf_layer_links (list, optional): List of URLs for additional layers to filter false positives.
-        date_layer_links (list, optional): List of URLs for date layers to filter by date.
+        conf_layer_links (list, optional): Confidence layer URLs aligned with data_layer_links.
+        date_layer_links (list, optional): Date layer URLs aligned with data_layer_links.
         benchmark_stats (dict, optional): Mutable dictionary to track benchmarking stats.
                                           If provided, enables benchmark mode.
         username (str, optional): Earthdata username.
         password (str, optional): Earthdata password.
 
     Returns:
-        list or tuple: List of rioxarray datasets loaded from the provided links (in granule order).
-                       May also return conf_DS and date_DS if applicable.
+        tuple: (DS, conf_DS, date_DS). DS is the list of loaded rioxarray datasets (in granule
+               order). conf_DS and date_DS are lists aligned with DS (None entries where the
+               auxiliary file is missing), or None if not requested or missing for every granule.
+
+    Raises:
+        ValueError: If an auxiliary link list is not the same length as data_layer_links.
     """
+    for label, aux_links in (("conf", conf_layer_links), ("date", date_layer_links)):
+        if aux_links is not None and len(aux_links) != len(data_layer_links):
+            raise ValueError(
+                f"{label}_layer_links ({len(aux_links)}) must be aligned with "
+                f"data_layer_links ({len(data_layer_links)})."
+            )
+
     # If the first link exists as a local path, assume all are local and skip auth.
     if data_layer_links and Path(data_layer_links[0]).exists():
         logger.info("Local files detected. Skipping Earthdata authentication.")
@@ -468,18 +481,20 @@ def compile_and_load_data(
         ]
 
         # Filter auxiliary links consistently if they exist
-        if conf_layer_links:
+        if conf_layer_links is not None:
             conf_layer_links = [
                 link for i, link in enumerate(conf_layer_links) if is_most_common[i]
             ]
-        if date_layer_links:
+        if date_layer_links is not None:
             date_layer_links = [
                 link for i, link in enumerate(date_layer_links) if is_most_common[i]
             ]
 
     # Define helpers for loading data
     def _load_single(link):
-        """Helper to load a single dataset, handling auth fallback."""
+        """Helper to load a single dataset, handling auth fallback. Missing links load as None."""
+        if link is None:
+            return None
         source_path = None
         try:
             source_candidate = Path(str(link))
@@ -533,6 +548,8 @@ def compile_and_load_data(
     def _close_datasets(datasets):
         """Close any xarray datasets/dataarrays opened for benchmarking."""
         for ds in datasets:
+            if ds is None:
+                continue
             try:
                 ds.close()
             except Exception:
@@ -596,25 +613,23 @@ def compile_and_load_data(
             logger.info(f"Loading {len(links)} '{label}' granules concurrently...")
             return _run_concurrent(links)
 
-    # Load the primary data layer (DS)
+    def load_aux(links, label):
+        """Load an aligned auxiliary list, or return None if no granule has the layer."""
+        if links is None or all(link is None for link in links):
+            return None
+        missing = sum(link is None for link in links)
+        if missing:
+            logger.warning(
+                f"{missing}/{len(links)} granule(s) are missing the {label} layer."
+            )
+        return load_datasets(links, label=label)
+
+    # Load the primary data layer (DS) and aligned auxiliary layers
     DS = load_datasets(data_layer_links, label="Primary Data")
+    conf_DS = load_aux(conf_layer_links, "Confidence")
+    date_DS = load_aux(date_layer_links, "Date")
 
-    # If conf_layer_links AND mode == 'flood'
-    if conf_layer_links and mode == "flood":
-        conf_DS = load_datasets(conf_layer_links, label="Confidence")
-        return DS, conf_DS
-
-    # If conf_layer_links AND date_layer_links AND mode == 'fire' or 'landslide'
-    if (
-        conf_layer_links
-        and date_layer_links
-        and (mode == "fire" or mode == "landslide")
-    ):
-        date_DS = load_datasets(date_layer_links, label="Date")
-        conf_DS = load_datasets(conf_layer_links, label="Confidence")
-        return DS, date_DS, conf_DS
-    else:
-        return DS
+    return DS, conf_DS, date_DS
 
 
 def merge_first_valid(
@@ -629,15 +644,18 @@ def merge_first_valid(
     """
     Element-wise merge method for continuous integer imagery.
     Uses Rasterio's mask inputs to perform a copy-first-valid operation.
-    """
-    # Target pixels in old_data to update are where merged_mask is True (currently nodata)
-    # and new_mask is False (new valid data exists)
-    update_mask = merged_mask & ~new_mask
 
-    old_data[update_mask] = new_data[update_mask]
+    Validity is decided by the first band only and applied to all bands, so stacked
+    auxiliary bands (e.g., CONF under WTR) always come from the same granule as band 1.
+    """
+    # Target pixels to update are where band 1 is currently nodata in the merged
+    # output and the new granule has valid band-1 data
+    update_mask = merged_mask[0] & ~new_mask[0]
+
+    old_data[:, update_mask] = new_data[:, update_mask]
 
     # Update the merged mask so subsequent granules know these pixels are now valid
-    merged_mask[update_mask] = False
+    merged_mask[:, update_mask] = False
 
     return old_data
 
@@ -740,7 +758,11 @@ def opera_rules(product: str = "OPERA_L3_DSWX-S1_V1", nodata: int = 255):
         method (function): A function that implements the custom merge method for the specified OPERA product.
     """
 
-    if product in ("OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DSWX-S1_V1", "OPERA_L3_DSWX-NI_V1"):
+    if product in (
+        "OPERA_L3_DSWX-HLS_V1",
+        "OPERA_L3_DSWX-S1_V1",
+        "OPERA_L3_DSWX-NI_V1",
+    ):
         priority = {
             1: 100,  # Open water (DSWx-HLS, DSWx-S1)
             2: 95,  # Partial surface water (DSWx-HLS)
