@@ -20,6 +20,20 @@ logger = logging.getLogger(__name__)
 ox.settings.requests_timeout = 900
 
 
+def _write_empty_impact_outputs(output_csv: Path) -> None:
+    """
+    Write header-only CSV and empty GeoJSON outputs, so a completed analysis with no
+    impacted structures is distinguishable from one that never ran.
+
+    Args:
+        output_csv (Path): Path of the impacted-structures CSV (GeoJSON uses the same stem).
+    """
+    pd.DataFrame(columns=["longitude", "latitude"]).to_csv(output_csv, index=False)
+    output_csv.with_suffix(".geojson").write_text(
+        '{"type": "FeatureCollection", "features": []}\n'
+    )
+
+
 def compute_structure_impact(
     raster_path: Path, bbox_snwe: list, output_csv: Path
 ) -> Tuple[int, int]:
@@ -30,7 +44,8 @@ def compute_structure_impact(
     Args:
         raster_path (Path): Path to the cumulative max_extent.tif (1=Water, 0=Dry, 255=NoData).
         bbox_snwe (list): Bounding box in [South, North, West, East] format.
-        output_csv (Path): Path to save the resulting CSV of impacted buildings.
+        output_csv (Path): Path to save the resulting CSV of impacted buildings. The CSV and a
+            matching GeoJSON are always written (empty when no structures are impacted).
 
     Returns:
         tuple: (total_buildings_found, flooded_buildings_count). total_buildings_found counts
@@ -130,6 +145,7 @@ def compute_structure_impact(
 
     if not gdf_list:
         logger.info("[Impact] No buildings found in the flooded areas.")
+        _write_empty_impact_outputs(output_csv)
         return 0, 0
 
     # Combine all chunked building dataframes
@@ -234,5 +250,6 @@ def compute_structure_impact(
 
     else:
         logger.info("[Impact] Zero buildings intersected the flood extent.")
+        _write_empty_impact_outputs(output_csv)
 
     return total_buildings, flooded_count

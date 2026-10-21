@@ -1503,7 +1503,7 @@ def run_max_extent_pipeline(
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-    # Skip if it exists
+    # Skip the max extent if it exists
     if skip_existing and out_path.exists():
         logger.info(f"Maximum flood extent already exists, skipping: {out_path.name}")
     else:
@@ -1514,8 +1514,14 @@ def run_max_extent_pipeline(
             logger.error(f"Max Extent computation failed: {e}")
             return 0.0, 0.0
 
-        # Compute estimate of impacted structures
-        impact_csv_path = out_path.parent / f"{out_path.stem}_impacted_structures.csv"
+    # Compute estimate of impacted structures. Checked separately from the max extent so
+    # an interrupted or failed impact step is retried on a --skip-existing rerun.
+    impact_csv_path = out_path.parent / f"{out_path.stem}_impacted_structures.csv"
+    if skip_existing and impact_csv_path.exists():
+        logger.info(
+            f"Impacted structures already computed, skipping: {impact_csv_path.name}"
+        )
+    else:
         try:
             total_bldgs, flooded_bldgs = compute_structure_impact(
                 out_path, bbox, impact_csv_path

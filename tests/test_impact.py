@@ -8,6 +8,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import box
 
 from disasters.impact import compute_structure_impact
+from disasters.pipeline import run_max_extent_pipeline
 
 ORIGIN_X, ORIGIN_Y = 500000, 4000000
 
@@ -63,3 +64,61 @@ def test_compute_structure_impact_warns_when_osm_fails(mock_osm, tmp_path, caplo
 
     assert (total, flooded) == (0, 0)
     assert "INCOMPLETE" in caplog.text
+
+
+@patch("disasters.impact.ox.features_from_polygon")
+def test_compute_structure_impact_writes_empty_outputs_when_none_flooded(
+    mock_osm, tmp_path
+):
+    mock_osm.return_value = _buildings().iloc[[1]]  # only the dry building
+    raster = _write_extent(tmp_path / "max_extent.tif")
+    csv_path = tmp_path / "impact.csv"
+
+    total, flooded = compute_structure_impact(raster, None, csv_path)
+
+    assert (total, flooded) == (1, 0)
+    # Header-only CSV and empty GeoJSON mark a completed run with zero impacts
+    assert csv_path.read_text().strip() == "longitude,latitude"
+    assert gpd.read_file(csv_path.with_suffix(".geojson")).empty
+
+
+def _run_max_extent(tmp_path, skip_existing):
+    out_path = tmp_path / "max_extent.tif"
+    run_max_extent_pipeline(
+        [],
+        out_path,
+        tmp_path,
+        tmp_path,
+        "OPERA_L3_DSWX-S1_V1",
+        "MAX-EXTENT",
+        "id",
+        "date",
+        "title",
+        [0, 1, 0, 1],
+        None,
+        False,
+        skip_existing=skip_existing,
+    )
+    return out_path
+
+
+@patch("disasters.pipeline.run_plotting_task")
+@patch("disasters.impact.compute_structure_impact", return_value=(0, 0))
+def test_skip_existing_reruns_impact_when_csv_missing(mock_impact, mock_plot, tmp_path):
+    # Max extent exists from an earlier run, but impact never finished
+    (tmp_path / "max_extent.tif").touch()
+
+    _run_max_extent(tmp_path, skip_existing=True)
+
+    mock_impact.assert_called_once()
+
+
+@patch("disasters.pipeline.run_plotting_task")
+@patch("disasters.impact.compute_structure_impact", return_value=(0, 0))
+def test_skip_existing_skips_impact_when_csv_exists(mock_impact, mock_plot, tmp_path):
+    (tmp_path / "max_extent.tif").touch()
+    (tmp_path / "max_extent_impacted_structures.csv").write_text("longitude,latitude\n")
+
+    _run_max_extent(tmp_path, skip_existing=True)
+
+    mock_impact.assert_not_called()
