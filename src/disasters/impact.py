@@ -45,7 +45,9 @@ def compute_structure_impact(
         raster_path (Path): Path to the cumulative max_extent.tif (1=Water, 0=Dry, 255=NoData).
         bbox_snwe (list): Bounding box in [South, North, West, East] format.
         output_csv (Path): Path to save the resulting CSV of impacted buildings. The CSV and a
-            matching GeoJSON are always written (empty when no structures are impacted).
+            matching GeoJSON are written whenever structures are impacted, and written empty
+            when none are impacted and every OSM request succeeded. If requests failed and
+            nothing was impacted, no outputs are written so the step can be retried.
 
     Returns:
         tuple: (total_buildings_found, flooded_buildings_count). total_buildings_found counts
@@ -145,7 +147,10 @@ def compute_structure_impact(
 
     if not gdf_list:
         logger.info("[Impact] No buildings found in the flooded areas.")
-        _write_empty_impact_outputs(output_csv)
+        # Only record an empty result if every OSM request succeeded; otherwise leave no
+        # outputs so the step is retried (e.g., on a --skip-existing rerun)
+        if not failed_windows:
+            _write_empty_impact_outputs(output_csv)
         return 0, 0
 
     # Combine all chunked building dataframes
@@ -250,6 +255,7 @@ def compute_structure_impact(
 
     else:
         logger.info("[Impact] Zero buildings intersected the flood extent.")
-        _write_empty_impact_outputs(output_csv)
+        if not failed_windows:
+            _write_empty_impact_outputs(output_csv)
 
     return total_buildings, flooded_count

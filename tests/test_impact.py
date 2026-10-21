@@ -64,6 +64,8 @@ def test_compute_structure_impact_warns_when_osm_fails(mock_osm, tmp_path, caplo
 
     assert (total, flooded) == (0, 0)
     assert "INCOMPLETE" in caplog.text
+    # A failed run must not look like a completed run with zero impacts
+    assert not (tmp_path / "impact.csv").exists()
 
 
 @patch("disasters.impact.ox.features_from_polygon")
