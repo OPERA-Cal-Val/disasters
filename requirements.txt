@@ -3,14 +3,17 @@
 boto3
 click
 earthaccess
+geopandas
 matplotlib
 next_pass @ git+https://github.com/OPERA-Cal-Val/next_pass.git@main
 numpy
 openpyxl
 opera-utils==0.25.3
+osmnx
 pandas
 pygmt
 pyproj
 rasterio
 rioxarray<0.20.0
+shapely
 xarray
