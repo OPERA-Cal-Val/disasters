@@ -16,7 +16,8 @@ from shapely.geometry import box, shape
 
 logger = logging.getLogger(__name__)
 
-ox.settings.timeout = 900
+# Overpass request timeout in seconds (osmnx >= 2.0 name; "timeout" was removed)
+ox.settings.requests_timeout = 900
 
 
 def compute_structure_impact(
