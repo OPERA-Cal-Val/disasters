@@ -121,6 +121,38 @@ def test_run_download_only_accumulates_layers(
     assert result == out_dir / "data"
 
 
+@patch("disasters.pipeline.authenticate", return_value=("user", "pass"))
+@patch("disasters.pipeline.next_pass.run_next_pass")
+@patch("disasters.pipeline.read_opera_metadata")
+@patch("disasters.pipeline.concurrent.futures.ThreadPoolExecutor")
+def test_run_download_only_landslide_includes_dswx_hls_wtr(
+    mock_executor, mock_read_meta, mock_np, mock_auth, tmp_path
+):
+    """Landslide downloads need DSWx-HLS WTR to mask water-related DIST disturbance."""
+    mock_read_meta.return_value = pd.DataFrame(
+        {
+            "Dataset": ["OPERA_L3_DSWX-HLS_V1", "OPERA_L3_DIST-ALERT-HLS_V1"],
+            "Download URL WTR": ["https://fake.url/wtr.tif", None],
+            "Download URL BWTR": ["https://fake.url/bwtr.tif", None],
+            "Download URL VEG-DIST-STATUS": [None, "https://fake.url/status.tif"],
+        }
+    )
+    fake_np_out = tmp_path / "np_out"
+    fake_np_out.mkdir()
+    mock_np.return_value = str(fake_np_out)
+
+    run_download_only(
+        bbox=[30.2, 30.3, -97.8, -97.7],
+        output_dir=tmp_path / "downloads",
+        mode="landslide",
+        no_hls=True,
+    )
+
+    executor = mock_executor.return_value.__enter__.return_value
+    downloaded = set(executor.map.call_args.args[1])
+    assert downloaded == {"https://fake.url/wtr.tif", "https://fake.url/status.tif"}
+
+
 # ---------------------------------------------------------
 # 4. Test CLI properly parses multiple flags into tuples
 # ---------------------------------------------------------
@@ -319,6 +351,7 @@ def test_run_slope_filter_only_processes_nested_tifs(
     output_dir = tmp_path / "output"
 
     mock_earthaccess_auth.return_value.authenticated = True
+    mock_auth.return_value = ("user", "pass")
     mock_scan.return_value = pd.DataFrame()
     mock_spatial.return_value = ([0, 1, 0, 1], "EPSG:4326")
     mock_grid.return_value = {

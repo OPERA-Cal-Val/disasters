@@ -7,6 +7,7 @@ import numpy as np
 import osmnx as ox
 import pandas as pd
 import rasterio
+from osmnx._errors import InsufficientResponseError
 from pyproj import Transformer
 from rasterio.features import shapes
 from rasterio.mask import mask
@@ -15,7 +16,22 @@ from shapely.geometry import box, shape
 
 logger = logging.getLogger(__name__)
 
-ox.settings.timeout = 900
+# Overpass request timeout in seconds (osmnx >= 2.0 name; "timeout" was removed)
+ox.settings.requests_timeout = 900
+
+
+def _write_empty_impact_outputs(output_csv: Path) -> None:
+    """
+    Write header-only CSV and empty GeoJSON outputs, so a completed analysis with no
+    impacted structures is distinguishable from one that never ran.
+
+    Args:
+        output_csv (Path): Path of the impacted-structures CSV (GeoJSON uses the same stem).
+    """
+    pd.DataFrame(columns=["longitude", "latitude"]).to_csv(output_csv, index=False)
+    output_csv.with_suffix(".geojson").write_text(
+        '{"type": "FeatureCollection", "features": []}\n'
+    )
 
 
 def compute_structure_impact(
@@ -28,10 +44,15 @@ def compute_structure_impact(
     Args:
         raster_path (Path): Path to the cumulative max_extent.tif (1=Water, 0=Dry, 255=NoData).
         bbox_snwe (list): Bounding box in [South, North, West, East] format.
-        output_csv (Path): Path to save the resulting CSV of impacted buildings.
+        output_csv (Path): Path to save the resulting CSV of impacted buildings. The CSV and a
+            matching GeoJSON are written whenever structures are impacted, and written empty
+            when none are impacted and every OSM request succeeded. If requests failed and
+            nothing was impacted, no outputs are written so the step can be retried.
 
     Returns:
-        tuple: (total_buildings_found, flooded_buildings_count)
+        tuple: (total_buildings_found, flooded_buildings_count). total_buildings_found counts
+            the OSM buildings retrieved within raster windows that contain flood pixels.
+            If any OSM requests fail, both counts are lower bounds and a warning is logged.
     """
     logger.info("[Impact] Analyzing max flood extent using smart grid chunking...")
 
@@ -52,6 +73,7 @@ def compute_structure_impact(
             np.ceil(height / window_size) * np.ceil(width / window_size)
         )
         wet_windows = 0
+        failed_windows = 0
         current_window = 0
 
         # Iterate through the raster in 15km x 15km blocks
@@ -104,16 +126,31 @@ def compute_structure_impact(
                         ]
                         if not chunk_gdf.empty:
                             gdf_list.append(chunk_gdf)
+                except InsufficientResponseError:
+                    # OSM returned no buildings for this window (not a failure)
+                    continue
                 except Exception as e:
-                    logger.debug(f"[Impact] OSM chunk failed or timed out: {e}")
+                    failed_windows += 1
+                    logger.warning(
+                        f"[Impact] OSM request failed for window {current_window}/{total_windows}: {e}"
+                    )
                     continue
 
     logger.info(
         f"[Impact] Skipped {total_windows - wet_windows} non-flooded windows. Queried OSM for {wet_windows} flooded windows."
     )
+    if failed_windows:
+        logger.warning(
+            f"[Impact] {failed_windows}/{wet_windows} flooded windows failed to download OSM buildings. "
+            "Impacted structure counts are INCOMPLETE (lower bound)."
+        )
 
     if not gdf_list:
         logger.info("[Impact] No buildings found in the flooded areas.")
+        # Only record an empty result if every OSM request succeeded; otherwise leave no
+        # outputs so the step is retried (e.g., on a --skip-existing rerun)
+        if not failed_windows:
+            _write_empty_impact_outputs(output_csv)
         return 0, 0
 
     # Combine all chunked building dataframes
@@ -156,7 +193,7 @@ def compute_structure_impact(
                     return 0
 
                 # Merge the water squares into a single unified geometry
-                total_water_geom = gpd.GeoSeries(water_polys).unary_union
+                total_water_geom = gpd.GeoSeries(water_polys).union_all()
 
                 # Calculate the true fractional area intersection!
                 intersection_area = geom.intersection(total_water_geom).area
@@ -175,6 +212,7 @@ def compute_structure_impact(
     # Filter to only buildings that touched water
     flooded_gdf = gdf_proj[gdf_proj["flood_max"] == 1].copy()
     flooded_count = len(flooded_gdf)
+    total_buildings = len(gdf_proj)
 
     if flooded_count > 0:
         # Calculate centroids in UTM meters
@@ -217,5 +255,7 @@ def compute_structure_impact(
 
     else:
         logger.info("[Impact] Zero buildings intersected the flood extent.")
+        if not failed_windows:
+            _write_empty_impact_outputs(output_csv)
 
-    return 0, flooded_count
+    return total_buildings, flooded_count
