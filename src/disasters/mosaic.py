@@ -1,3 +1,4 @@
+import atexit
 import concurrent.futures
 import json
 import logging
@@ -5,6 +6,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from collections import Counter
@@ -24,6 +27,40 @@ from rioxarray.merge import merge_arrays
 from .auth import authenticate
 
 logger = logging.getLogger(__name__)
+
+# Temporary directory for source granules downloaded during this run. It is unique per
+# process so concurrent runs on the same host never share (or delete) each other's files.
+_SOURCE_CACHE_DIR: Optional[Path] = None
+_SOURCE_CACHE_LOCK = threading.Lock()
+
+
+def get_source_cache_dir() -> Path:
+    """
+    Return this run's temporary directory for downloaded source granules, creating it if needed.
+
+    The directory is created under the system temp location (honors TMPDIR) with a unique name.
+
+    Returns:
+        Path: Path to the run-scoped source cache directory.
+    """
+    global _SOURCE_CACHE_DIR
+    with _SOURCE_CACHE_LOCK:
+        if _SOURCE_CACHE_DIR is None or not _SOURCE_CACHE_DIR.exists():
+            _SOURCE_CACHE_DIR = Path(tempfile.mkdtemp(prefix="disasters_source_cache_"))
+        return _SOURCE_CACHE_DIR
+
+
+def clear_source_cache_dir() -> None:
+    """Delete this run's source cache directory (other runs' directories are untouched)."""
+    global _SOURCE_CACHE_DIR
+    with _SOURCE_CACHE_LOCK:
+        if _SOURCE_CACHE_DIR is not None:
+            shutil.rmtree(_SOURCE_CACHE_DIR, ignore_errors=True)
+            _SOURCE_CACHE_DIR = None
+
+
+# Also clean up if a run exits early (e.g., an exception or Ctrl-C)
+atexit.register(clear_source_cache_dir)
 
 
 def get_master_crs(df_opera: pd.DataFrame, mode: str) -> Optional[str]:
@@ -501,8 +538,7 @@ def compile_and_load_data(
             if source_candidate.exists():
                 source_path = source_candidate
             else:
-                cache_dir = Path("/tmp/disasters_source_cache")
-                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_dir = get_source_cache_dir()
                 suffix = source_candidate.suffix or ".tif"
                 source_path = cache_dir / f"{uuid.uuid4().hex}{suffix}"
                 with (

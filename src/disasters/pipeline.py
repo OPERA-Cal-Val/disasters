@@ -41,6 +41,7 @@ from .io import cleanup_temp_file, ensure_directory, export_aoi, scan_local_dire
 from .layouts import make_layout, make_map
 from .mosaic import (
     array_to_image,
+    clear_source_cache_dir,
     compile_and_load_data,
     get_image_colormap,
     get_master_crs,
@@ -1719,8 +1720,6 @@ def generate_products(
     Returns:
         None
     """
-    import shutil
-
     # Define short names and layer names based on mode or product FIRST
     if mode:
         if mode == "flood":
@@ -2572,7 +2571,7 @@ def generate_products(
                                 if da is not None:
                                     da.close()
 
-            shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+            clear_source_cache_dir()
 
         # RTC RGB Visualization Generation
         if mode in ["landslide", "rtc-rgb"] and "OPERA_L2_RTC-S1_V1" in mosaic_index:
@@ -2754,6 +2753,6 @@ def generate_products(
         if "differencing" in benchmark_stats:
             benchmark_stats["differencing"]["seq"] = total_diff_time
 
-    shutil.rmtree("/tmp/disasters_source_cache", ignore_errors=True)
+    clear_source_cache_dir()
 
     logger.info("All tasks complete.")

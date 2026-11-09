@@ -1,7 +1,9 @@
 import logging
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -241,8 +243,8 @@ def generate_coastal_mask(bbox: list, master_grid: dict) -> Optional[xr.DataArra
     """
     logger.info("Generating global coastal water mask using external GMT/GDAL tools...")
 
-    temp_dir = Path("/tmp/disasters_coastal_mask")
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    # Unique per call so concurrent runs on the same host never collide
+    temp_dir = Path(tempfile.mkdtemp(prefix="disasters_coastal_mask_"))
     temp_stem = f"coastal_mask_{uuid.uuid4().hex}"
     mask_geo_path = temp_dir / f"{temp_stem}.nc"
     mask_utm_path = temp_dir / f"{temp_stem}.tif"
@@ -257,7 +259,9 @@ def generate_coastal_mask(bbox: list, master_grid: dict) -> Optional[xr.DataArra
     ymin = ymax - (height * yres)
 
     env = os.environ.copy()
-    env.setdefault("GMT_USERDIR", "/tmp/.gmt")
+    # A shared /tmp/.gmt can be owned by another user on multi-user hosts; keep GMT's
+    # user directory inside this call's temp directory unless the user set one
+    env.setdefault("GMT_USERDIR", str(temp_dir / ".gmt"))
     if "PROJ_LIB" not in env:
         proj_candidate = Path(sys.executable).resolve().parent.parent / "share" / "proj"
         if proj_candidate.exists():
@@ -327,12 +331,7 @@ def generate_coastal_mask(bbox: list, master_grid: dict) -> Optional[xr.DataArra
         logger.warning(f"Failed to generate coastal mask: {e}")
         return None
     finally:
-        for path in (mask_geo_path, mask_utm_path):
-            if path.exists():
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def process_dem_and_slope(
