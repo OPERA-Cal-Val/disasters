@@ -12,7 +12,7 @@ import time
 import uuid
 from collections import Counter
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,7 @@ import rioxarray
 import xarray as xr
 from opera_utils.disp._remote import open_file
 from rasterio.transform import Affine
+from rasterio.warp import transform_bounds
 from rioxarray.merge import merge_arrays
 
 from .auth import authenticate
@@ -63,9 +64,61 @@ def clear_source_cache_dir() -> None:
 atexit.register(clear_source_cache_dir)
 
 
-def get_master_crs(df_opera: pd.DataFrame, mode: str) -> Optional[str]:
+def _lon_ranges(west: float, east: float) -> list[tuple[float, float]]:
+    """Split a longitude range into non-wrapping pieces (handles antimeridian crossings)."""
+    if west <= east:
+        return [(west, east)]
+    return [(west, 180.0), (-180.0, east)]
+
+
+def _bounds_intersect(a_snwe: Sequence[float], b_snwe: Sequence[float]) -> bool:
+    """Return True if two [S, N, W, E] boxes in EPSG:4326 overlap."""
+    if a_snwe[1] < b_snwe[0] or b_snwe[1] < a_snwe[0]:
+        return False
+    return any(
+        aw <= be and bw <= ae
+        for aw, ae in _lon_ranges(a_snwe[2], a_snwe[3])
+        for bw, be in _lon_ranges(b_snwe[2], b_snwe[3])
+    )
+
+
+def utm_crs_for_bbox(bbox_snwe: Sequence[float]) -> str:
+    """
+    Return the UTM CRS (EPSG string) of the zone containing the center of a bounding box.
+
+    Args:
+        bbox_snwe (Sequence[float]): Bounding box [S, N, W, E] in EPSG:4326.
+
+    Returns:
+        str: EPSG code string, e.g. "EPSG:32610".
+    """
+    south, north, west, east = bbox_snwe
+    if west > east:  # antimeridian crossing
+        east += 360.0
+    center_lon = ((west + east) / 2 + 180.0) % 360.0 - 180.0
+    center_lat = (south + north) / 2
+    zone_number = min(int((center_lon + 180) / 6) + 1, 60)
+    epsg = (32600 if center_lat >= 0 else 32700) + zone_number
+    return f"EPSG:{epsg}"
+
+
+def get_master_crs(
+    df_opera: pd.DataFrame, mode: str, bbox: Optional[Sequence[float]] = None
+) -> Optional[str]:
     """
     Calculates the most common UTM CRS from the metadata WKT geometries.
+
+    When no WKT geometries are available (local mode), the CRS is taken from raster
+    headers. If `bbox` is given, only rasters overlapping the AOI are counted, and if none
+    overlap, the UTM zone of the AOI center is used.
+
+    Args:
+        df_opera (pd.DataFrame): Metadata rows for the products being processed.
+        mode (str): Pipeline mode (unused; kept for call compatibility).
+        bbox (Sequence[float], optional): AOI as [S, N, W, E] in EPSG:4326.
+
+    Returns:
+        str: CRS string for the master grid.
     """
     logger.info("Determining Global Master CRS from geometric metadata...")
     from shapely import wkt
@@ -96,32 +149,17 @@ def get_master_crs(df_opera: pd.DataFrame, mode: str) -> Optional[str]:
 
     if not epsg_counter:
         logger.info("Falling back to raster header CRS detection.")
-        url_cols = [c for c in df_opera.columns if c.startswith("Download URL")]
-        all_files = []
-        for col in url_cols:
-            all_files.extend(df_opera[col].dropna().tolist())
-
-        crs_counter = Counter()
-        for filepath in set(all_files):
-            try:
-                with rasterio.open(filepath) as src:
-                    if src.crs is not None:
-                        crs_counter[src.crs.to_epsg() or src.crs.to_string()] += 1
-            except Exception:
-                continue
-
-        if not crs_counter:
-            raise RuntimeError(
-                "Could not determine CRS: no valid geometries or readable raster CRS metadata found."
+        crs_str = most_common_raster_crs(df_opera, bbox)
+        if crs_str is None:
+            if bbox is None:
+                raise RuntimeError(
+                    "Could not determine CRS: no valid geometries or readable raster CRS metadata found."
+                )
+            crs_str = utm_crs_for_bbox(bbox)
+            logger.info(
+                f"No rasters overlap the AOI; using the AOI center's UTM zone ({crs_str})."
             )
-
-        most_common_crs, count = crs_counter.most_common(1)[0]
-        crs_obj = pyproj.CRS.from_user_input(most_common_crs)
-        logger.info(
-            f"Global Master CRS determined from raster headers: {crs_obj.name} ({crs_obj.to_string()})"
-        )
-        logger.info(f"Found in {count}/{len(set(all_files))} granules.")
-        return crs_obj.to_string()
+        return crs_str
 
     most_common_epsg, count = epsg_counter.most_common(1)[0]
 
@@ -132,6 +170,58 @@ def get_master_crs(df_opera: pd.DataFrame, mode: str) -> Optional[str]:
     logger.info(f"Found in {count}/{len(valid_geoms)} granules.")
 
     return f"EPSG:{most_common_epsg}"
+
+
+def most_common_raster_crs(
+    df_opera: pd.DataFrame, bbox: Optional[Sequence[float]] = None
+) -> Optional[str]:
+    """
+    Return the most common CRS among the rasters referenced in a metadata DataFrame.
+
+    Args:
+        df_opera (pd.DataFrame): DataFrame with "Download URL ..." (or "Filepath") columns.
+        bbox (Sequence[float], optional): AOI as [S, N, W, E] in EPSG:4326. If given, only
+            rasters whose footprint overlaps the AOI are counted.
+
+    Returns:
+        str | None: CRS string, or None if no (overlapping) raster could be read.
+    """
+    url_cols = [
+        c
+        for c in df_opera.columns
+        if str(c).startswith("Download URL") or c == "Filepath"
+    ]
+    all_files = set()
+    for col in url_cols:
+        all_files.update(df_opera[col].dropna().tolist())
+
+    crs_counter = Counter()
+    for filepath in all_files:
+        try:
+            with rasterio.open(filepath) as src:
+                if src.crs is None:
+                    continue
+                if bbox is not None:
+                    west, south, east, north = transform_bounds(
+                        src.crs, "EPSG:4326", *src.bounds
+                    )
+                    if not _bounds_intersect([south, north, west, east], bbox):
+                        continue
+                crs_counter[src.crs.to_epsg() or src.crs.to_string()] += 1
+        except Exception:
+            continue
+
+    if not crs_counter:
+        return None
+
+    most_common_crs, count = crs_counter.most_common(1)[0]
+    crs_obj = pyproj.CRS.from_user_input(most_common_crs)
+    scope = "overlapping the AOI" if bbox is not None else "in total"
+    logger.info(
+        f"Master CRS determined from raster headers: {crs_obj.name} ({crs_obj.to_string()}), "
+        f"found in {count}/{sum(crs_counter.values())} rasters {scope}."
+    )
+    return crs_obj.to_string()
 
 
 def get_master_grid_props(

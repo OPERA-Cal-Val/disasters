@@ -47,6 +47,8 @@ from .mosaic import (
     get_master_crs,
     get_master_grid_props,
     mosaic_opera,
+    most_common_raster_crs,
+    utm_crs_for_bbox,
     warp_dataarray_to_grid,
 )
 
@@ -221,7 +223,7 @@ def get_local_spatial_properties(df_opera: pd.DataFrame) -> tuple[list[float], s
 
     most_common_crs = crs_counter.most_common(1)[0][0]
 
-    logger.info(f"Local Master CRS determined: {most_common_crs}")
+    logger.info(f"Most common CRS across local files: {most_common_crs}")
 
     # Return [S, N, W, E] and the CRS
     return [miny, maxy, minx, maxx], most_common_crs
@@ -921,6 +923,11 @@ def run_mosaic_only(
         else:
             internal_bbox = list(bbox)
             logger.info(f"Using user-provided S N W E bounds: {internal_bbox}")
+
+        # Grid in the CRS of the files that actually overlap the requested AOI
+        target_crs_proj4 = most_common_raster_crs(
+            df_opera, internal_bbox
+        ) or utm_crs_for_bbox(internal_bbox)
     else:
         internal_bbox = auto_bbox
         logger.info(f"Auto-calculated bounding box from input files: {internal_bbox}")
@@ -1793,7 +1800,7 @@ def generate_products(
         logger.warning(f"Failed to export AOI bounding box in generate_products: {e}")
 
     # Determine most common UTM CRS to warp all granules to across all dates
-    target_crs_proj4 = get_master_crs(df_mode_data, mode)
+    target_crs_proj4 = get_master_crs(df_mode_data, mode, bbox=bbox)
 
     # Detect if the CRS is geographic to set the correct resolution
     crs_obj = pyproj.CRS.from_string(target_crs_proj4)
